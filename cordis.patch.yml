@@ -1,0 +1,5 @@
+# Mount the Host-side learning activity broker. The model-facing tool is
+# loaded only when the user selects the Learning preset.
+- insert:
+    - id: interactive-learning
+      name: '@dsh-portable/interactive-learning'
