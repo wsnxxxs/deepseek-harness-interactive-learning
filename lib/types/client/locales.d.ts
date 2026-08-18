@@ -30,6 +30,10 @@ export declare const zh: {
     error: string;
     noResponse: string;
     fallback: string;
+    submitAnswer: string;
+    awaitingReveal: string;
+    continue: string;
+    roundProgress: string;
 };
 export declare const en: typeof zh;
 export type LearningLocaleKey = keyof typeof zh;

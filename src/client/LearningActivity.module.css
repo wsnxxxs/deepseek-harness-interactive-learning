@@ -507,6 +507,117 @@ button.toolRow {
   word-break: break-word;
 }
 
+.round {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--dsw-alias-bg-layer-2);
+}
+
+.roundHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.roundHeader span {
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+}
+
+.roundHeader h2,
+.roundProcess h3,
+.roundStructure h3,
+.roundFeedback p {
+  margin: 0;
+}
+
+.roundHeader h2 {
+  font-size: 18px;
+}
+
+.roundProcess {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+  border-left: 2px solid var(--dsw-alias-brand-primary);
+  padding: 10px 0 10px 12px;
+}
+
+.roundNode {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--dsw-alias-brand-primary);
+  border-radius: 50%;
+  color: var(--dsw-alias-brand-primary);
+  font-size: 12px;
+}
+
+.roundProcess[data-final] .roundNode {
+  background: var(--dsw-alias-brand-primary);
+  color: var(--dsw-alias-label-on-primary, white);
+}
+
+.roundParameter,
+.roundParameterValues,
+.roundCurveList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.roundParameter {
+  flex-direction: column;
+}
+
+.roundParameterValues span,
+.roundCurveList span {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 999px;
+  padding: 5px 9px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}
+
+.roundStructure {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.roundStructure > div {
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  padding: 10px;
+}
+
+.roundFeedback {
+  display: grid;
+  gap: 8px;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.revealTransition {
+  animation: revealCurrentFrame 700ms ease both;
+}
+
+.round[data-round-state="completed"] .revealTransition,
+.round[data-round-state="ready_to_continue"] .revealTransition,
+.round[data-round-state="ack_submitting"] .revealTransition {
+  animation: none;
+}
+
+@keyframes revealCurrentFrame {
+  from { opacity: 0.45; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 0.35; transform: scale(0.8); }
   50% { opacity: 1; transform: scale(1); }
@@ -535,7 +646,8 @@ button.toolRow {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .runningDot {
+  .runningDot,
+  .revealTransition {
     animation: none;
   }
 }

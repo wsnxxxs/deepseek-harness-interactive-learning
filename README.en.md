@@ -4,11 +4,21 @@
 
 An independently installable DeepSeek Harness plugin that adds a Learning mode with diagnostic questions, prediction, interaction, and reflection.
 
-It includes three native activities:
+Live teaching uses the two-gate `activity@2` protocol:
 
-- Parameter explorer: predict first, then adjust parameters and inspect curves.
-- Process stepper: predict and reveal a process one step at a time.
-- Structure compare: align two structures, select important differences, and explain them.
+- `learning_question` sends one current focus and one question, then waits for the learner.
+- `learning_reveal` is constructed after the model sees that answer and remains pending until the animation finishes and the learner continues.
+- Only then can the model generate the next Question, so future titles, questions, and answers are never preloaded into the Client.
+
+Current-round visuals support parameter relationships, one process state, and structural comparisons. Model-visible payloads use closed schemas; no arbitrary scripts execute, and curves use a restricted mathematical expression format. Question and Reveal Markdown fallbacks obey the same phase boundary. `activity@1` remains only for legacy replay, not new live teaching.
+
+## Interaction order
+
+```text
+Question -> learner answer -> model evaluation -> Reveal -> animation complete -> learner continue -> next Question
+```
+
+A model step may contain at most one Learning gate. Ordinary explanations do not require a forced question; use native interaction only when the interaction itself improves understanding.
 
 ## Install
 
@@ -51,7 +61,7 @@ pnpm test
 pnpm run check
 ```
 
-This version targets DeepSeek Harness kernel `0.1.0-rc.5` and DeepSeek Harness Desktop `1.3.0`.
+The standalone package develops against DeepSeek Harness kernel `0.1.0-rc.5`. The portable integration uses its pinned `0.1.0-rc.7` workspace APIs; sync changes file by file while preserving portable callId, Client-module, and release-lifecycle adaptations. Do not overwrite the portable app directory from this repository.
 
 ## License
 

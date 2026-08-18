@@ -9,10 +9,14 @@ import { ProcessStepper } from '../src/client/ProcessStepper.tsx'
 import { StructureCompare } from '../src/client/StructureCompare.tsx'
 import { LearningComposer, selectLearningActivity } from '../src/client/LearningComposer.tsx'
 import { LearningToolView } from '../src/client/LearningToolView.tsx'
+import { RoundActivity } from '../src/client/RoundActivity.tsx'
+import { initialRoundState, roundReducer } from '../src/client/roundState.ts'
+import { subscribeLearningUiLifecycle } from '../src/client/lifecycle.ts'
+import { LEARNING_TOOL_VIEW_KEYS } from '../src/client/index.ts'
 import { en } from '../src/client/locales.ts'
 import { encodeLearningDetail } from '../src/transport.ts'
 import { RESPONSE_PROTOCOL } from '../src/protocol.ts'
-import { compareActivity, parameterActivity, processActivity } from './fixtures.ts'
+import { compareActivity, parameterActivity, processActivity, questionRound, revealRound } from './fixtures.ts'
 
 const t = ((key: keyof typeof en, params?: Record<string, string | number>) => {
   let value: string = en[key]
@@ -22,7 +26,10 @@ const t = ((key: keyof typeof en, params?: Record<string, string | number>) => {
   return value
 }) as TranslateNS<'interactive-learning'>
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  sessionStorage.clear()
+})
 
 describe('native learning renderers', () => {
   it('registers exactly the three trusted protocol renderers and rejects duplicate keys', () => {
@@ -35,6 +42,10 @@ describe('native learning renderers', () => {
     const renderer = (() => null) as never
     registry.register('parameter_explorer', renderer)
     expect(() => registry.register('parameter_explorer', renderer)).toThrow(/already registered/)
+  })
+
+  it('registers V2 Question and Reveal tool views while retaining V1 replay', () => {
+    expect(LEARNING_TOOL_VIEW_KEYS).toEqual(['learning_activity', 'learning_question', 'learning_reveal'])
   })
 
   it('submits local parameter state and an explanation', () => {
@@ -88,6 +99,130 @@ describe('native learning renderers', () => {
       answer: { selectedDifferences: ['lookup_cost'], explanation: 'An array jumps to an index.' },
       interactionState: { selectedDifferences: ['lookup_cost'] },
     })
+  })
+})
+
+describe('V2 single-round renderer', () => {
+  it('shows a neutral wait while streamed tool arguments are incomplete', () => {
+    const events: string[] = []
+    const unsubscribe = subscribeLearningUiLifecycle(event => events.push(event.name))
+    const block = {
+      seq: 1,
+      time: 1_000,
+      callId: 'streaming-v2',
+      name: 'learning_question',
+      argsRaw: '{"protocol":"dsh-learning/activity@2","phase":"question","prompt":"Which �',
+    }
+    const ToolView = LearningToolView as unknown as ComponentType<{
+      block: typeof block
+      inspect(): void
+      t: typeof t
+    }>
+    const view = render(<ToolView block={block} inspect={() => {}} t={t} />)
+    expect(screen.getByRole('status').textContent).toContain('Waiting')
+    expect(screen.queryByText(/could not be displayed safely/)).toBeNull()
+    expect(events).toEqual(['learning.call.stream_started'])
+    view.rerender(<ToolView block={{ ...block, argsRaw: JSON.stringify(questionRound()) }} inspect={() => {}} t={t} />)
+    expect(events).toEqual(['learning.call.stream_started', 'learning.call.args_completed'])
+    view.rerender(<ToolView block={{ ...block, argsRaw: JSON.stringify(questionRound()) }} inspect={() => {}} t={t} />)
+    expect(events).toHaveLength(2)
+    unsubscribe()
+  })
+
+  it('renders only the current question frame and submits one answer', async () => {
+    const onSubmitAnswer = vi.fn(async () => {})
+    const activity = questionRound()
+    const { container } = render(<RoundActivity activity={activity} onSubmitAnswer={onSubmitAnswer} t={t} />)
+
+    expect(container.textContent).toContain('A → B → C')
+    expect(container.textContent).not.toContain('Future round title')
+    expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(2)
+    fireEvent.click(screen.getByRole('radio', { name: 'A' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
+
+    await waitFor(() => expect(onSubmitAnswer).toHaveBeenCalledWith('a', { answer: 'a' }))
+    await waitFor(() => expect(container.querySelector('[data-round-state="awaiting_model_reveal"]')).toBeTruthy())
+    expect((screen.getByRole('radio', { name: 'A' }).closest('fieldset') as HTMLFieldSetElement).disabled).toBe(true)
+  })
+
+  it('keeps Continue disabled until the reveal animation completes, then preserves the final visual', async () => {
+    const onContinue = vi.fn(async () => {})
+    const activity = revealRound()
+    const { container } = render(<RoundActivity activity={activity} onContinue={onContinue} t={t} />)
+    const continueButton = screen.getByRole('button', { name: 'Continue learning' }) as HTMLButtonElement
+
+    expect(continueButton.disabled).toBe(true)
+    expect(container.textContent).toContain('A → B → C')
+    const transition = container.querySelector('[data-reveal-transition]')
+    if (transition === null) throw new Error('missing reveal transition')
+    fireEvent.animationEnd(transition)
+    expect(continueButton.disabled).toBe(false)
+    expect(container.textContent).toContain('B → C')
+
+    fireEvent.click(continueButton)
+    fireEvent.click(continueButton)
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith({ completed: true }))
+    expect(onContinue).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(container.querySelector('[data-round-state="completed"]')).toBeTruthy())
+    expect(container.textContent).toContain('B → C')
+  })
+
+  it('restores only the current question draft after a remount', () => {
+    const activity = questionRound()
+    const first = render(
+      <RoundActivity activity={activity} storageKey="wait-1:activity-1:question:0" onSubmitAnswer={async () => {}} t={t} />,
+    )
+    fireEvent.click(screen.getByRole('radio', { name: 'B' }))
+    first.unmount()
+
+    render(<RoundActivity activity={activity} storageKey="wait-1:activity-1:question:0" onSubmitAnswer={async () => {}} t={t} />)
+    expect((screen.getByRole('radio', { name: 'B' }) as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('restores animation-complete as ready without replaying the protocol gate', () => {
+    const activity = revealRound()
+    const first = render(
+      <RoundActivity activity={activity} storageKey="wait-2:activity-2:reveal:0" onContinue={async () => {}} t={t} />,
+    )
+    const transition = first.container.querySelector('[data-reveal-transition]')
+    if (transition === null) throw new Error('missing reveal transition')
+    fireEvent.animationEnd(transition)
+    expect(JSON.parse(sessionStorage.getItem('dsh-learning/round@2:wait-2:activity-2:reveal:0') ?? '{}'))
+      .toMatchObject({ animationComplete: true })
+    first.unmount()
+
+    render(<RoundActivity activity={activity} storageKey="wait-2:activity-2:reveal:0" onContinue={async () => {}} t={t} />)
+    expect((screen.getByRole('button', { name: 'Continue learning' }) as HTMLButtonElement).disabled).toBe(false)
+    expect(screen.getByText('B → C')).toBeTruthy()
+  })
+
+  it('emits answer-free reveal lifecycle events in order', async () => {
+    const events: string[] = []
+    const unsubscribe = subscribeLearningUiLifecycle(event => events.push(event.name))
+    const { container } = render(
+      <RoundActivity activity={revealRound()} storageKey="wait-3:activity-3:reveal:0" onContinue={async () => {}} t={t} />,
+    )
+    const transition = container.querySelector('[data-reveal-transition]')
+    if (transition === null) throw new Error('missing reveal transition')
+    fireEvent.animationEnd(transition)
+    fireEvent.click(screen.getByRole('button', { name: 'Continue learning' }))
+    await waitFor(() => expect(events).toContain('learning.continue.accepted'))
+    unsubscribe()
+    expect(events).toEqual([
+      'learning.ui.presented',
+      'learning.animation.started',
+      'learning.animation.finished',
+      'learning.continue.accepted',
+    ])
+  })
+
+  it('does not allow animation or acknowledgement events to skip reducer gates', () => {
+    const question = initialRoundState('question')
+    expect(roundReducer(question, { type: 'ANIMATION_FINISHED' })).toBe(question)
+    const reveal = initialRoundState('reveal')
+    const ready = roundReducer(reveal, { type: 'ANIMATION_FINISHED' })
+    expect(ready.status).toBe('ready_to_continue')
+    expect(roundReducer(ready, { type: 'ACK_ACCEPTED' })).toBe(ready)
   })
 })
 
