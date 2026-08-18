@@ -12,6 +12,7 @@ import {
 } from '../protocol.ts'
 import {
   decodeLearningDetail,
+  decodeLearningQuestionId,
   decodeLearningWaitDetail,
   decodeLearningWaitQuestionId,
 } from '../transport.ts'
@@ -25,18 +26,15 @@ export type LearningQuestionWait = PendingWait<'question'>
 export function envelopeOf(wait: LearningQuestionWait): LearningActivityEnvelopeV1 | LearningWaitEnvelopeV2 | undefined {
   if (wait.payload.questions.length !== 1) return undefined
   const question = wait.payload.questions[0]
-  const v2 = decodeLearningWaitDetail(question?.detail)
-  if (v2 !== undefined && decodeLearningWaitQuestionId(question?.id) === v2.waitId) return v2
-  const v1 = decodeLearningDetail(question?.detail)
-  if (v1 === undefined || question?.id !== `learning:${v1.activityId}`) return undefined
-  return v1
+  if (question === undefined) return undefined
+  const v2 = decodeLearningWaitDetail(question.detail)
+  if (v2 !== undefined && decodeLearningWaitQuestionId(question.id) === v2.waitId) return v2
+  return decodeLearningQuestionId(question.id) ?? decodeLearningDetail(question.detail)
 }
 
 /** Pure composer-chain selector: only package-owned question envelopes are claimed. */
 export function selectLearningActivity({ interactions, session }: ComposerChainProps): LearningQuestionWait | null {
-  const currentSessionId = session === undefined ? undefined
-    : String((session as unknown as { sessionId?: unknown; id?: unknown }).sessionId
-      ?? (session as unknown as { id?: unknown }).id ?? '')
+  const currentSessionId = session?.sessionId
   for (const interaction of interactions) {
     if (interaction.kind !== 'question') continue
     const wait = interaction as LearningQuestionWait
@@ -53,6 +51,15 @@ type LearningComposerProps =
   & PropsLocale<'interactive-learning'>
 
 export function LearningComposer({ matched, t }: LearningComposerProps) {
+  // Claim the package-owned question so the generic question composer does
+  // not duplicate it. The actual interaction lives in the tool call's place
+  // in the assistant turn; a pending activity intentionally has no bottom UI.
+  void matched
+  void t
+  return null
+}
+
+export function LearningInteraction({ matched, t }: LearningComposerProps) {
   const envelope = useMemo(() => envelopeOf(matched), [matched])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -74,8 +81,7 @@ export function LearningComposer({ matched, t }: LearningComposerProps) {
       if (!accepted.accepted) throw new Error(accepted.reason)
     } catch (cause: unknown) {
       setBusy(false)
-      const message = t('error', { message: cause instanceof Error ? cause.message : String(cause) })
-      setError(message)
+      setError(t('error', { message: cause instanceof Error ? cause.message : String(cause) }))
       throw cause
     }
   }
@@ -154,6 +160,7 @@ export function LearningComposer({ matched, t }: LearningComposerProps) {
   return (
     <ActivityFrame
       key={matched.key}
+      activityId={envelope.activityId}
       activity={envelope.activity}
       busy={busy}
       error={error}

@@ -1,4 +1,11 @@
 import { type LearningActivityEnvelopeV1, type LearningActivityEnvelopeInputV1, type LearningWaitEnvelopeInputV2, type LearningWaitEnvelopeV2 } from './protocol.ts';
+/**
+ * Encode the package-owned envelope in the question id. Generic question
+ * clients do not render ids, so visible detail remains readable fallback text.
+ */
+export declare function encodeLearningQuestionId(input: LearningActivityEnvelopeInputV1): string;
+/** Decode and revalidate a package-owned question id. */
+export declare function decodeLearningQuestionId(value: unknown): LearningActivityEnvelopeV1 | undefined;
 /** Hide the structured activity envelope in a Markdown comment before the readable fallback. */
 export declare function encodeLearningDetail(input: LearningActivityEnvelopeInputV1): string;
 /** Decode and revalidate a package-owned question detail; ordinary questions return undefined. */

@@ -56,7 +56,6 @@ export interface PresentLearningGateRequest {
   agent?: Agent
   signal?: AbortSignal
   timeoutMs?: number
-  /** Stable tool call identity used for diagnostics and retry correlation. */
   callId?: string
 }
 
@@ -73,23 +72,12 @@ export type LearningLifecycleEventName =
   | 'learning.continue.accepted'
   | 'learning.wait.resolved'
   | 'learning.model.next_step_started'
-
 export interface LearningLifecycleEvent {
-  name: LearningLifecycleEventName
-  at: number
-  phase: 'question' | 'reveal'
-  activityId: string
-  lessonToken: string
-  roundToken: string
-  seq: number
-  callId?: string
+  name: LearningLifecycleEventName; at: number; phase: 'question' | 'reveal'
+  activityId: string; lessonToken: string; roundToken: string; seq: number; callId?: string
 }
-
 interface LessonState {
-  sessionId: string
-  lessonToken: string
-  roundToken: string
-  seq: number
+  sessionId: string; lessonToken: string; roundToken: string; seq: number
   status: 'question-pending' | 'awaiting-reveal' | 'reveal-pending' | 'ready-question'
 }
 
@@ -102,10 +90,7 @@ function fallback(activityId: string, activity: LearningActivityV1, reason: stri
   }
 }
 
-/**
- * Host-side interaction coordinator. It owns validation and activity identity,
- * then reuses the pinned kernel's durable question wait for transport.
- */
+/** Host-side V2 Question/Reveal coordinator; V1 is replay-only. */
 export class LearningActivityBroker extends Service {
   static inject = ['userQuestions']
 
@@ -388,10 +373,12 @@ export class LearningActivityBroker extends Service {
     }
   }
 
+
+
+  /** @deprecated V1 is accepted only for static legacy replay/fallback. */
   async present(request: PresentLearningActivityRequest): Promise<LearningResponseV1> {
     const activity = parseLearningActivity(request.activity)
-    const activityId = randomUUID()
-    return fallback(activityId, activity, 'legacy-replay-only')
+    return fallback(randomUUID(), activity, 'legacy-replay-only')
   }
 }
 

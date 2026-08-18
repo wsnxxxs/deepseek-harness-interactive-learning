@@ -2,23 +2,38 @@
 
 [中文](README.md)
 
-An independently installable DeepSeek Harness plugin that adds a Learning mode with diagnostic questions, prediction, interaction, and reflection.
+An independently installable DeepSeek Harness plugin that adds an explicitly selected Learning mode. It separates explanation from interaction: a native visual is an exploratory illustration inside an ordinary response, not a form that owns the learner's turn or replaces the normal composer.
 
-Live teaching uses the two-gate `activity@2` protocol:
+## Non-blocking learning flow
 
-- `learning_question` sends one current focus and one question, then waits for the learner.
-- `learning_reveal` is constructed after the model sees that answer and remains pending until the animation finishes and the learner continues.
-- Only then can the model generate the next Question, so future titles, questions, and answers are never preloaded into the Client.
+1. The assistant first explains the genuinely missing idea in ordinary prose.
+2. When a visual or manipulation materially improves understanding, it calls `learning_visual` once.
+3. The closed protocol validates and immediately returns `visual-result@4 { status: "ready" }`; it creates no pending question, submit button, or Reveal turn.
+4. The visual renders at the tool call and remains interactive on refresh and historical replay.
+5. The assistant continues with the interpretation and can ask one natural question through ordinary conversation.
 
-Current-round visuals support parameter relationships, one process state, and structural comparisons. Model-visible payloads use closed schemas; no arbitrary scripts execute, and curves use a restricted mathematical expression format. Question and Reveal Markdown fallbacks obey the same phase boundary. `activity@1` remains only for legacy replay, not new live teaching.
+The old `learning_activity`, `learning_question`, and `learning_reveal` tools remain only as read-only V1/V2 replay support. V3 parameter charts are likewise replay-only and are no longer exposed by the Learning preset.
 
-## Interaction order
+## Semantic Visual Protocol v4
 
-```text
-Question -> learner answer -> model evaluation -> Reveal -> animation complete -> learner continue -> next Question
-```
+`dsh-learning/visual@4` routes concepts to eight trusted native renderer families:
 
-A model step may contain at most one Learning gate. Ordinary explanations do not require a forced question; use native interaction only when the interaction itself improves understanding.
+- `plot` for functions, data, probability, points, lines, bars, and quantitative relationships;
+- `node_link` for neural-network layers, trees, processes, causality, and topology;
+- `scene_2d` for geometry, vectors, forces, and annotated spatial schematics;
+- `relation` for comparisons, matrices, classification, and set membership;
+- `timeline` for historical events, discoveries, phases, and eras;
+- `formula_steps` for derivations, algebraic transformations, and proof chains;
+- `study_map` for anchored sections, prerequisites, and concept roles in reference material;
+- `recall_deck` for hinted active-recall cards with local review state.
+
+Every family can include a sequence that focuses only declared objects. Renderers provide a visible title, keyboard operation, responsive layouts, structured text alternatives, and a local error boundary. Interactions include bounded sliders, plot probes, series toggles, node and edge selection, progressive focus, and local review state.
+
+A request to recall a derivative formula is answered with the formula instead of an arbitrary exponent slider. A requested fully connected neural network is rendered with layers, nodes, and every real edge instead of a sigmoid plot or Markdown art.
+
+When a learner supplies a document, PDF, handout, or several sources, the system preserves observed section and page/title anchors, uses `study_map` for an overview when useful, then routes each concept to a more specific visual. It does not flatten a source into one mega-graph or mechanically turn every attachment into flashcards.
+
+All model-visible payloads use closed schemas. Curves accept only a bounded mathematical AST. Unknown fields, undeclared variables, non-finite values, invalid references, cyclic prerequisites, excessive payloads, and invalid ranges are rejected. Model-provided HTML, SVG, Markdown diagrams, and JavaScript never execute.
 
 ## Install
 
@@ -61,7 +76,9 @@ pnpm test
 pnpm run check
 ```
 
-The standalone package develops against DeepSeek Harness kernel `0.1.0-rc.5`. The portable integration uses its pinned `0.1.0-rc.7` workspace APIs; sync changes file by file while preserving portable callId, Client-module, and release-lifecycle adaptations. Do not overwrite the portable app directory from this repository.
+`pnpm run check` also runs the credential-free deterministic teaching evaluation. The real desktop/web runtime reads package exports from `lib`, so rebuild and fully restart after source changes.
+
+The standalone package targets the current DeepSeek Harness kernel `0.1.0-rc.7`, using the same release family as the portable integration. Its Host composition, Client bundler, and `cordis.patch.yml` remain adapted to the standalone package layout.
 
 ## License
 

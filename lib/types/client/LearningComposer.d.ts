@@ -9,6 +9,7 @@ export declare function selectLearningActivity({ interactions, session }: Compos
 type LearningComposerProps = {
     matched: LearningQuestionWait;
 } & PropsLocale<'interactive-learning'>;
-export declare function LearningComposer({ matched, t }: LearningComposerProps): import("react").JSX.Element | null;
+export declare function LearningComposer({ matched, t }: LearningComposerProps): null;
+export declare function LearningInteraction({ matched, t }: LearningComposerProps): import("react").JSX.Element | null;
 export {};
 //# sourceMappingURL=LearningComposer.d.ts.map

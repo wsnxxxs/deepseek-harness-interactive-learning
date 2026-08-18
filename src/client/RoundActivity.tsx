@@ -4,6 +4,7 @@ import { useEffect, useReducer, useRef, useState } from 'react'
 import type { LearningActivityV2, LearningJson } from '../protocol.ts'
 import { initialRoundState, roundReducer } from './roundState.ts'
 import { emitLearningUiLifecycle } from './lifecycle.ts'
+import { ParameterRoundVisual } from './ParameterExplorer.tsx'
 import css from './LearningActivity.module.css'
 
 export interface RevealCompletion {
@@ -59,40 +60,51 @@ function ProcessVisual({ activity, final }: { activity: LearningActivityV2; fina
   )
 }
 
-function ParameterVisual({ activity }: { activity: LearningActivityV2 }) {
+function ParameterVisual({ activity, t }: { activity: LearningActivityV2; t: TranslateNS<'interactive-learning'> }) {
   if (activity.visual?.kind !== 'parameter') return null
-  return (
-    <section className={css.roundParameter}>
-      <div className={css.roundParameterValues}>
-        {activity.visual.parameters.map(parameter => (
-          <span key={parameter.id}><strong>{parameter.label}</strong> {parameter.initial}</span>
-        ))}
-      </div>
-      <div className={css.roundCurveList}>
-        {activity.visual.curves.map(curve => <span key={curve.id}>{curve.label}</span>)}
-      </div>
-    </section>
-  )
+  return <ParameterRoundVisual payload={activity.visual} disabled={activity.phase === 'reveal'} t={t} />
 }
 
 function StructureVisual({ activity }: { activity: LearningActivityV2 }) {
   if (activity.visual?.kind !== 'structure') return null
+  const [selected, setSelected] = useState<Set<string>>(() => new Set())
+  const left = new Map(activity.visual.left.items.map(item => [item.id, item]))
+  const right = new Map(activity.visual.right.items.map(item => [item.id, item]))
   return (
-    <section className={css.roundStructure}>
-      {[activity.visual.left, activity.visual.right].map(side => (
-        <div key={side.title}>
-          <h3>{side.title}</h3>
-          <ul>{side.items.map(item => <li key={item.id}>{item.label}</li>)}</ul>
-        </div>
-      ))}
+    <section className={css.roundStructure} aria-label={`${activity.visual.left.title} / ${activity.visual.right.title}`}>
+      <h3>{activity.visual.left.title}</h3>
+      <h3>{activity.visual.right.title}</h3>
+      {activity.visual.alignments.map(alignment => {
+        const leftItem = alignment.leftId === undefined ? undefined : left.get(alignment.leftId)
+        const rightItem = alignment.rightId === undefined ? undefined : right.get(alignment.rightId)
+        const label = alignment.prompt ?? `${leftItem?.label ?? '—'} / ${rightItem?.label ?? '—'}`
+        return (
+          <label className={css.roundAlignment} key={alignment.id} data-selected={selected.has(alignment.id) || undefined}>
+            <input
+              type="checkbox"
+              checked={selected.has(alignment.id)}
+              disabled={activity.phase === 'reveal'}
+              onChange={() => setSelected(current => {
+                const next = new Set(current)
+                if (next.has(alignment.id)) next.delete(alignment.id)
+                else next.add(alignment.id)
+                return next
+              })}
+            />
+            <span>{leftItem?.label ?? '—'}</span>
+            <span>{rightItem?.label ?? '—'}</span>
+            {alignment.prompt === undefined ? null : <small>{label}</small>}
+          </label>
+        )
+      })}
     </section>
   )
 }
 
-function CurrentVisual({ activity, final }: { activity: LearningActivityV2; final: boolean }) {
+function CurrentVisual({ activity, final, t }: { activity: LearningActivityV2; final: boolean; t: TranslateNS<'interactive-learning'> }) {
   if (activity.visual === undefined) return null
   if (activity.visual.kind === 'process') return <ProcessVisual activity={activity} final={final} />
-  if (activity.visual.kind === 'parameter') return <ParameterVisual activity={activity} />
+  if (activity.visual.kind === 'parameter') return <ParameterVisual activity={activity} t={t} />
   return <StructureVisual activity={activity} />
 }
 
@@ -263,7 +275,7 @@ export function RoundActivity({
         className={activity.phase === 'reveal' ? css.revealTransition : undefined}
         data-reveal-transition={activity.phase === 'reveal' || undefined}
       >
-        <CurrentVisual activity={activity} final={final} />
+        <CurrentVisual activity={activity} final={final} t={t} />
       </div>
       {activity.phase === 'question' ? (
         <>

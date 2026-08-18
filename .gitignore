@@ -1,5 +1,6 @@
 node_modules/
 output/
+tests/browser/dist/
 *.tsbuildinfo
 *.log
 .DS_Store
