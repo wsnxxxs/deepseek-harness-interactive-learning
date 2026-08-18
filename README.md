@@ -4,6 +4,15 @@
 
 这是从 DeepSeek Harness Desktop 中独立出来的互动学习插件。安装后会新增一个由用户显式选择的“学习模式”。它把解释和交互解耦：原生视觉是普通回答中的可操作插图，不会接管用户回合或替代正常输入框。
 
+## 架构
+
+- 包根提供 `learningActivities` Host broker，并注册 `learning/state` session event；它不注册模型可见工具。
+- `./agent` 只由 `preset/learning` 挂载，提供即时的 `learning_visual`、内部的
+  `learning_state_update` 和可选的 `learning_checkpoint`。
+- `./client` 在工具调用位置渲染 visual 与 checkpoint；state update 明确为空视图。
+- `./bootstrap` 提供 `registerInteractiveLearningSessionCompatibility`，用于在恢复持久化 session 之前注册事件类型。
+- V1/V2 activity 和 V3 visual 仅保留只读历史回放兼容，不再暴露给当前 Learning preset。
+
 ## 非阻塞学习流程
 
 1. 助手先用普通文本讲清真正缺失的概念。
@@ -13,6 +22,35 @@
 5. 助手继续解释关键现象；必要时通过普通对话提出一个自然问题。
 
 旧 `learning_activity`、`learning_question` 和 `learning_reveal` 仅保留为 V1/V2 历史会话的只读兼容回放。V3 参数图同样只用于历史回放，Learning preset 不再向模型暴露旧工具。
+
+## Session-scoped LearnerState
+
+Learning 只为当前 session 保存小型、暂定的教学状态：当前目标、已展示的先验、误解或缺口、支架需求、
+评估语境以及独立完成或迁移的证据。状态不是跨 session 用户画像、人格或长期掌握度。
+
+状态更新必须来自具体可观察证据，不能机械地每轮调用。有效更新会追加去除 session identity 的完整
+`learning/state` 快照；后续 model step 会重新 fold 持久事件并生成有界的 100–300 token 动态上下文。
+refresh/resume 使用同一事件日志，fork 会独立分叉，reset 会推进 revision，避免旧异步结果复活旧状态。
+
+公共入口同时导出 LearnerState 类型、折叠、重置、序列化和 session-event 注册 API：
+
+```ts
+import {
+  createInitialLearnerState,
+  foldLearnerStateSession,
+  serializeLearnerStateSnapshot,
+} from '@dsh-portable/interactive-learning'
+```
+
+## 可选 Checkpoint Protocol v1
+
+`dsh-learning/checkpoint@1` 只用于会实质改变下一教学动作的预测、解释、对比、设计选择、调试诊断、边界情况或迁移应用，不是每轮 Continue 仪式。
+
+- 每个 session 最多一个 pending checkpoint，每个 model step 最多一个不同 checkpoint。
+- 类型为 `free_text`、`single_choice`、`numeric`、`prediction` 和 `code_slot`；单选结果使用稳定 option id。
+- payload 只能包含当前 prompt、context、expected evidence、无答案 options 和自洽 fallback。
+- 终态只有 `submitted`、`skipped`、`cancelled`；call 和 receipt 重放幂等，冲突复用 fail closed。
+- skip、cancel、timeout、renderer failure 或无 rich Client 都恢复普通对话，不产生 Reveal、animation、Continue 或第二次等待。
 
 ## Semantic Visual Protocol v4
 
@@ -50,6 +88,12 @@ dsh plugin --profile web add git+https://github.com/wsnxxxs/deepseek-harness-int
 & "$env:USERPROFILE\.dsh\profiles\web\node_modules\.bin\dsh-learning-preset.cmd" install
 ```
 
+在构造 Loader、agent loop 或恢复任何 configured session 之前，先导入 bootstrap：
+
+```ts
+import '@dsh-portable/interactive-learning/bootstrap'
+```
+
 重启 DeepSeek Harness，在新会话中选择“学习模式”。
 
 如果设置了 `DSH_HOME`，上面的路径应改为 `$env:DSH_HOME\profiles\web\node_modules\.bin\dsh-learning-preset.cmd`。
@@ -76,9 +120,27 @@ pnpm install
 pnpm run build
 pnpm test
 pnpm run check
+pnpm run test:package:purity
+pnpm run test:package
+pnpm run pack:check
+git diff --check
 ```
 
 `pnpm run check` 也会执行无凭证的确定性教学评估。真实桌面/Web 通过 package exports 读取 `lib`，所以源码修改后必须重新构建并完整重启应用。
+
+浏览器组件 fixture 可用仓库根目录命令启动：
+
+```powershell
+pnpm exec vite --config tests/browser/vite.config.mjs
+```
+
+无凭证评估可单独运行：
+
+```powershell
+pnpm run eval
+```
+
+包级测试会检查声明闭包、绝对路径纯度、tarball 安装、公共导出以及 preset 安装/升级/卸载生命周期。
 
 核心目录：
 

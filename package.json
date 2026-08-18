@@ -24,6 +24,10 @@
       "types": "./lib/types/agent.d.ts",
       "default": "./lib/agent.js"
     },
+    "./bootstrap": {
+      "types": "./lib/types/bootstrap.d.ts",
+      "default": "./lib/bootstrap.js"
+    },
     "./client": {
       "types": "./lib/types/client/index.d.ts",
       "default": "./lib/client.js"
@@ -57,16 +61,40 @@
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-tool",
-        "@deepseek-ai/dsh-client-ui-slots",
         "@deepseek-ai/dsh-api-remotes"
       ],
       "platform": "web"
     }
   },
   "files": [
-    "lib/**/*.js",
-    "lib/**/*.js.map",
-    "lib/types/**/*.d.ts",
+    "lib/*.js",
+    "lib/*.js.map",
+    "lib/types/index.d.ts",
+    "lib/types/agent.d.ts",
+    "lib/types/bootstrap.d.ts",
+    "lib/types/broker.d.ts",
+    "lib/types/client/index.d.ts",
+    "lib/types/client/ActivityRenderer.d.ts",
+    "lib/types/client/lifecycle.d.ts",
+    "lib/types/client/types.d.ts",
+    "lib/types/eval.d.ts",
+    "lib/types/installer.d.ts",
+    "lib/types/learner-state.d.ts",
+    "lib/types/preset.d.ts",
+    "lib/types/protocol.d.ts",
+    "lib/types/index.d.ts.map",
+    "lib/types/agent.d.ts.map",
+    "lib/types/bootstrap.d.ts.map",
+    "lib/types/broker.d.ts.map",
+    "lib/types/client/index.d.ts.map",
+    "lib/types/client/ActivityRenderer.d.ts.map",
+    "lib/types/client/lifecycle.d.ts.map",
+    "lib/types/client/types.d.ts.map",
+    "lib/types/eval.d.ts.map",
+    "lib/types/installer.d.ts.map",
+    "lib/types/learner-state.d.ts.map",
+    "lib/types/preset.d.ts.map",
+    "lib/types/protocol.d.ts.map",
     "preset/**/*",
     "cordis.patch.yml",
     "README.md",
@@ -74,14 +102,23 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -b && tsdown",
+    "build": "node scripts/build-package.mjs",
+    "bundle": "pnpm run build",
     "check": "node --check lib/index.js && node --check lib/agent.js && node --check lib/client.js && node lib/eval-cli.js",
-    "test": "vitest run",
+    "test:source": "vitest run",
+    "test": "pnpm run test:source && pnpm run test:package",
+    "eval": "node lib/eval-cli.js",
+    "test:package:purity": "node tests/package-purity.mjs lib",
+    "test:package": "pnpm run build && node tests/package-lifecycle.mjs",
+    "package:prepare": "pnpm run build && pnpm run test:package:purity && node scripts/assert-package-output.mjs",
+    "prepack": "pnpm run package:prepare",
+    "prepublishOnly": "pnpm run package:prepare",
     "pack:check": "pnpm pack --pack-destination output"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-agent": "*",
+    "@deepseek-ai/dsh-session": "*",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-runtime": "*",
     "@deepseek-ai/dsh-client-ui-conversation": "*",
@@ -97,6 +134,7 @@
   "peerDependenciesMeta": {
     "@deepseek-ai/cordis": { "optional": true },
     "@deepseek-ai/dsh-agent": { "optional": true },
+    "@deepseek-ai/dsh-session": { "optional": true },
     "@deepseek-ai/dsh-client-locale": { "optional": true },
     "@deepseek-ai/dsh-client-runtime": { "optional": true },
     "@deepseek-ai/dsh-client-ui-conversation": { "optional": true },
@@ -137,6 +175,8 @@
     "@deepseek-ai/dsh-llm-mock-server": "0.1.0-rc.7",
     "@deepseek-ai/dsh-message-feedback": "0.1.0-rc.7",
     "@deepseek-ai/dsh-scope": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.1.0-rc.7",
     "@deepseek-ai/dsh-session-stats": "0.1.0-rc.7",
     "@deepseek-ai/dsh-storage": "0.1.0-rc.7",
     "@deepseek-ai/dsh-storage-domain": "0.1.0-rc.7",
