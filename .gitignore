@@ -4,3 +4,4 @@ tests/browser/dist/
 *.tsbuildinfo
 *.log
 .DS_Store
+.playwright-cli/

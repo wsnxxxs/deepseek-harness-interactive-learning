@@ -250,8 +250,15 @@ function clientConfig(id: string, entry: string): UserConfig {
           cssModules: { pattern: '[hash]_[local]' },
           minify: true,
         })
+        // lightningcss does not guarantee a stable iteration order for its
+        // exports, so an unsorted map makes every rebuild rewrite the committed
+        // client bundle with an identical-but-reordered class table. This
+        // package ships lib/ for direct GitHub installs, where that churn buries
+        // real changes in the diff.
         const classMap: Record<string, string> = {}
-        for (const [local, exp] of Object.entries(cssExports ?? {})) classMap[local] = exp.name
+        for (const [local, exp] of Object.entries(cssExports ?? {}).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))) {
+          classMap[local] = exp.name
+        }
         // One <style data-plugin> per module file; idempotent under re-evaluation.
         return [
           `const css = ${JSON.stringify(code.toString())};`,
