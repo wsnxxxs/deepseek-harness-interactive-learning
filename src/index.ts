@@ -5,7 +5,18 @@ registerInteractiveLearningSessionCompatibility()
 
 export { registerInteractiveLearningSessionCompatibility } from './bootstrap.ts'
 export {
+  LEARN_INTENT,
+  LEARNING_INTENT_POLICY,
+  classifyLearnIntent,
+  isLearnIntent,
+  isLearningBoundary,
+  type LearnIntent,
+  type LearnIntentDecision,
+  type LearnTrigger,
+} from './learn-intent.ts'
+export {
   LearningActivityBroker,
+  type LearningRecallFeedbackResult,
   type LearningStateUpdateRequest,
   type LearningStateUpdateResult,
   type ObservableLearnerStateUpdate,
@@ -15,6 +26,14 @@ export {
   type PresentLearningGateRequest,
 } from './broker.ts'
 export { LearningActivityBroker as default } from './broker.ts'
+export {
+  routeLearningRequest,
+  routeLearningTurn,
+  type LearningRoute,
+  type LearningRouteDecision,
+  type LearningRouteSession,
+  type LearningTurnRouteDecision,
+} from './teaching-route.ts'
 export type {
   LearningActivityV1,
   LearningActivityV2,
@@ -22,9 +41,12 @@ export type {
   LearningCheckpointEvidenceKindV1,
   LearningCheckpointKindV1,
   LearningCheckpointOptionV1,
+  LearningCheckpointOutcomeReasonV1,
+  LearningCheckpointCancelledReasonV1,
   LearningCheckpointResponseV1,
   LearningCheckpointResultV1,
   LearningCheckpointSkippedResultV1,
+  LearningCheckpointSkippedReasonV1,
   LearningCheckpointSubmittedResultV1,
   LearningCheckpointV1,
   LearningCheckpointWaitEnvelopeInputV1,
@@ -49,10 +71,20 @@ export type {
   LearningFormulaStepsV4,
   LearningStudyMapV4,
   LearningRecallDeckV4,
+  LearningDataTableV4,
+  LearningStateTransitionV4,
+  LearningSequenceBufferV4,
+  LearningSequenceDiagramV4,
+  LearningCodeTraceV4,
+  LearningField2DV4,
+  LearningCausalLoopDiagramV4,
+  LearningRecallFeedbackV1,
+  LearningRecallStatusV1,
   LearningVisualResultV4,
 } from './protocol.ts'
 export {
   DEFAULT_TRANSCRIPT_TOKEN_BUDGET,
+  MAX_FAILED_MOVES,
   LEARNER_STATE_EVENT_PROTOCOL,
   LEARNER_STATE_PROTOCOL,
   LEARNER_STATE_SESSION_EVENT_TYPE,
@@ -69,6 +101,12 @@ export {
   type LearnerState,
   type LearnerStateCorrection,
   type LearnerStateEvent,
+  type LearnerPhase,
+  type LearnerNextMove,
+  type LearnerResponseAssessment,
+  type LearnerTeachingMove,
+  type LearnerFailedMove,
+  type LearnerMoveFailureReason,
   type LearnerStateSnapshot,
   type LearnerStateSnapshotEvent,
   type ObservableLearnerEvent,

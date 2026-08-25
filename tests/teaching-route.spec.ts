@@ -1,0 +1,172 @@
+import { describe, expect, it } from 'vitest'
+import { routeLearningRequest, routeLearningTurn } from '../src/teaching-route.ts'
+
+describe('Learning first-turn routing', () => {
+  it.each([
+    ['Learn LLMs', 'calibrate'],
+    ['Teach me LLMs', 'calibrate'],
+    ['Galois theory', 'calibrate'],
+    ['学习 LLM', 'calibrate'],
+    ['教我机器学习', 'calibrate'],
+    ['Walk me through monads', 'calibrate'],
+    ['Take me through monads', 'calibrate'],
+    ['Explain heteroskedastic ordered probit', 'calibrate'],
+    ['我想了解快速排序', 'calibrate'],
+    ['Teach me electrical current', 'calibrate'],
+    ['什么是贝叶斯定理？', 'teach-minimum'],
+  ] as const)('calibrates an underspecified request: %s', (request, route) => {
+    expect(routeLearningRequest(request).route).toBe(route)
+  })
+
+  it.each([
+    ['Teach me LLMs from zero', 'teach-minimum'],
+    ['I am a beginner; explain LLMs', 'teach-minimum'],
+    ['从零开始教我 LLM', 'teach-minimum'],
+    ['学习 LLM 的下一 token 预测', 'teach-minimum'],
+    ['Help me understand why attention works', 'teach-minimum'],
+    ['I always confuse precision and recall.', 'teach-minimum'],
+    ['I am rusty on calculus.', 'teach-minimum'],
+    ['ELI5 attention', 'teach-minimum'],
+  ] as const)('starts the minimum lesson when the route is clear: %s', (request, route) => {
+    expect(routeLearningRequest(request).route).toBe(route)
+  })
+
+  it.each([
+    'Give me a complete overview of LLMs; do not ask questions first.',
+    '直接讲 LLM 的全面概览，不要提问。',
+    'Give me a current survey of the LLM market.',
+    'How does the current interest rate mechanism work?',
+    'Explain the current price mechanism.',
+    'Explain the contested debate around open versus closed models.',
+    '给我最新的 LLM 行业综述。',
+  ])('allows an overview only when explicitly requested or appropriate: %s', request => {
+    expect(routeLearningRequest(request).route).toBe('overview')
+  })
+
+  it.each([
+    'I have 15 minutes before a meeting. Explain database rollback and give me the shortest safe checklist.',
+    '生产事故还有 20 分钟必须处理完，告诉我怎么回滚这次迁移。',
+  ])('answers a concrete opening deadline directly: %s', request => {
+    expect(routeLearningRequest(request)).toMatchObject({
+      route: 'direct',
+      reason: 'initial-urgent-blocker',
+      intent: { intent: 'learn' },
+    })
+  })
+
+  it('does not confuse exclusions with a learning route', () => {
+    expect(routeLearningRequest('Implement a queue in TypeScript.').intent.intent).toBe('not-learn')
+    expect(routeLearningRequest('What is the latest news about queues?').intent.intent).toBe('not-learn')
+    expect(routeLearningRequest('Calculate 2+2.').intent.intent).toBe('not-learn')
+    expect(routeLearningRequest('Why is my car not starting?').intent.intent).toBe('not-learn')
+    expect(routeLearningRequest('What is the capital of France?').intent.intent).toBe('not-learn')
+    expect(routeLearningRequest('What is a queue?').intent.intent).toBe('learn')
+  })
+
+  it.each([
+    'Quiz me on queues.',
+    'flashcards on queues',
+  ])('creates an explicitly requested study resource directly: %s', request => {
+    expect(routeLearningRequest(request)).toMatchObject({
+      route: 'direct',
+      reason: 'resource-creation',
+      intent: { intent: 'learn', trigger: 'resource-creation' },
+    })
+  })
+
+  it('keeps the explicit-learning fallback on calibration when the shape is unknown', () => {
+    expect(routeLearningRequest('Could you walk me through monads in a useful way?')).toMatchObject({
+      route: 'calibrate',
+      reason: 'explicit-learning',
+      intent: { trigger: 'explicit-learning' },
+    })
+  })
+
+  it('inherits short answers, confusion, pressure, and what-if follow-ups', () => {
+    const first = routeLearningTurn('Teach me queues.')
+    expect(first).toMatchObject({ segment: 'active', inherited: false, route: 'calibrate' })
+
+    for (const text of [
+      'A.',
+      'I still don\'t get it.',
+      'Just tell me; I am running out of patience.',
+      'What if C arrives next?',
+    ]) {
+      expect(routeLearningTurn(text, { active: true, decision: first })).toMatchObject({
+        segment: 'active',
+        inherited: true,
+        route: 'continue',
+        reason: 'active-segment',
+      })
+    }
+  })
+
+  it('continues a durable active segment when no process-local route remains', () => {
+    expect(routeLearningTurn('A.', { active: true })).toMatchObject({
+      segment: 'active',
+      inherited: true,
+      route: 'continue',
+      reason: 'active-segment',
+      intent: { intent: 'learn' },
+    })
+    expect(routeLearningTurn('Calculate 2+2.', { active: true })).toMatchObject({
+      segment: 'closed',
+      inherited: false,
+      route: 'direct',
+      intent: { trigger: 'calculation-task' },
+    })
+  })
+
+  it('reclassifies a clear new topic instead of inheriting the old segment', () => {
+    const first = routeLearningTurn('Teach me gradient descent.')
+
+    expect(routeLearningTurn('What is SVM?', { active: true, decision: first })).toMatchObject({
+      route: 'teach-minimum',
+      reason: 'definition',
+      inherited: false,
+      segment: 'active',
+      intent: { trigger: 'definition' },
+    })
+    expect(routeLearningTurn('支持向量机', { active: true, decision: first })).toMatchObject({
+      route: 'calibrate',
+      inherited: false,
+      segment: 'active',
+      intent: { trigger: 'bare-concept' },
+    })
+  })
+
+  it('keeps a same-topic question and a what-if follow-up in the active segment', () => {
+    const first = routeLearningTurn('Teach me gradient descent.')
+
+    expect(routeLearningTurn('How does gradient descent work?', { active: true, decision: first })).toMatchObject({
+      route: 'continue',
+      inherited: true,
+      reason: 'active-segment',
+    })
+    expect(routeLearningTurn('What if C arrives next?', { active: true, decision: first })).toMatchObject({
+      route: 'continue',
+      inherited: true,
+      reason: 'active-segment',
+    })
+  })
+
+  it.each([
+    'Translate this paragraph into Chinese.',
+    'Implement a queue in TypeScript.',
+  ])('closes an active segment for an explicit task switch: %s', text => {
+    const first = routeLearningTurn('Teach me queues.')
+    expect(routeLearningTurn(text, { active: true, decision: first })).toMatchObject({
+      segment: 'closed',
+      inherited: false,
+      intent: { intent: 'not-learn' },
+    })
+  })
+
+  it('lets a short acknowledgement close an active segment without reopening it', () => {
+    const first = routeLearningTurn('Teach me queues.')
+    const active = routeLearningTurn("That's enough.", { active: true, decision: first })
+    const completed = routeLearningTurn('Got it.', { active: false })
+    expect(active).toMatchObject({ segment: 'closed', inherited: false, route: 'direct' })
+    expect(completed).toMatchObject({ segment: 'closed', inherited: false, route: 'direct' })
+  })
+})

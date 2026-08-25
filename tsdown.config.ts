@@ -2,13 +2,13 @@ import { clientBundle } from './build/tsdown.client.ts'
 import type { TsdownPlugin } from 'tsdown'
 
 const PACKAGE_ID = '@dsh-portable/interactive-learning'
-const ABSOLUTE_CSS_VIRTUAL_ID = /(?:\0|\\0)dsh-css:(?:[A-Za-z]:[\\/]|\/)[^\r\n]*?[\\/]src[\\/]client[\\/]([^\\/\r\n]+\.module\.css\.mjs)/g
+const ABSOLUTE_CSS_VIRTUAL_ID = /(?:\0|\\0)dsh-css:(?:[A-Za-z]:[\\/]|\/)[^\r\n]*?[\\/]src[\\/]client[\\/]((?:[^\\/\r\n]+[\\/])*[^\\/\r\n]+\.module\.css\.mjs)/g
 
 /** Keep machine-local CSS virtual ids out of committed and published bundles. */
 function sanitizePublishedPath(value: string): string {
   return value.replace(ABSOLUTE_CSS_VIRTUAL_ID, (match, fileName: string) => {
     const marker = match.startsWith('\\0') ? '\\0' : '\0'
-    return `${marker}dsh-css:src/client/${fileName}`
+    return `${marker}dsh-css:src/client/${fileName.replaceAll('\\', '/')}`
   })
 }
 

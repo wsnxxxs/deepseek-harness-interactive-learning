@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
+  LEARNING_CANARY_MATRIX,
   OFFLINE_REFERENCE_CANDIDATES,
   TEACHING_EVAL_CASES,
   gradeTeachingSuite,
@@ -9,6 +10,30 @@ import {
 import { LEARNING_TEACHING_POLICY } from '../src/teaching-policy.ts'
 
 describe('non-blocking teaching behavior evaluation', () => {
+  it('keeps the real-model canary as a compact behavior matrix', () => {
+    expect(LEARNING_CANARY_MATRIX.map(scenario => scenario.id)).toEqual([
+      'bare-concept',
+      'confusion-repair',
+      'expert-terminology',
+      'current-contested-topic',
+      'initial-deadline',
+      'mid-lesson-impatience',
+      'self-study',
+      'graded-work',
+      'flashcards',
+      'study-guide',
+      'repeated-explanation-and-fresh-transfer',
+    ])
+    expect(LEARNING_CANARY_MATRIX.every(scenario => scenario.expectedIntent === 'learn')).toBe(true)
+    expect(LEARNING_CANARY_MATRIX.find(scenario => scenario.id === 'bare-concept')?.expectedRoute).toBe('calibrate')
+    expect(LEARNING_CANARY_MATRIX.find(scenario => scenario.id === 'expert-terminology')?.expectedRoute).toBe('calibrate')
+    expect(LEARNING_CANARY_MATRIX.find(scenario => scenario.id === 'initial-deadline')?.expectedRoute).toBe('direct')
+    expect(LEARNING_CANARY_MATRIX.find(scenario => scenario.id === 'current-contested-topic')?.expectedTrigger).toBe('current-topic')
+    expect(LEARNING_CANARY_MATRIX.find(scenario => scenario.id === 'current-contested-topic')?.expectedRoute).toBe('overview')
+    expect(LEARNING_CANARY_MATRIX.find(scenario => scenario.id === 'graded-work')?.responseShape).toBe('graded-boundary')
+    expect(LEARNING_CANARY_MATRIX.find(scenario => scenario.id === 'repeated-explanation-and-fresh-transfer')?.kind).toBe('multi-turn')
+  })
+
   it('covers visual restraint, conversational adaptation, and stopping after transfer', () => {
     expect(TEACHING_EVAL_CASES.map(scenario => scenario.id)).toEqual([
       'simple-fact-no-visual',
@@ -72,6 +97,16 @@ describe('non-blocking teaching behavior evaluation', () => {
     expect(verdicts.find(item => item.caseId === 'transfer-stop')?.passed).toBe(false)
   })
 
+  it('accepts simple inflections and Chinese equivalents in continuation evidence', () => {
+    const verdicts = gradeTeachingSuite([
+      ...OFFLINE_REFERENCE_CANDIDATES.filter(candidate => candidate.caseId !== 'adaptive-response' && candidate.caseId !== 'transfer-stop'),
+      { caseId: 'adaptive-response', activityKind: null, continuation: '负斜率会下降。', endedSegment: false },
+      { caseId: 'transfer-stop', activityKind: null, continuation: '这一段已经完成。', endedSegment: true },
+    ])
+    expect(verdicts.find(item => item.caseId === 'adaptive-response')?.passed).toBe(true)
+    expect(verdicts.find(item => item.caseId === 'transfer-stop')?.passed).toBe(true)
+  })
+
   it('keeps the single standing policy and reference-routing Skill aligned with the V4 semantic visual model', () => {
     const root = resolve(import.meta.dirname, '..')
     const agent = readFileSync(join(root, 'src/agent.ts'), 'utf8')
@@ -81,16 +116,17 @@ describe('non-blocking teaching behavior evaluation', () => {
     const visualProtocol = readFileSync(join(skillRoot, 'references/visual-protocol.md'), 'utf8')
     const referenceMaterials = readFileSync(join(skillRoot, 'references/reference-materials.md'), 'utf8')
     for (const phrase of [
-      'learning_visual',
-      'ordinary conversation',
-      'at most one focused question',
-      'visual complete immediately',
-      'Never ask the learner to submit visual state',
-      'ask_user_question',
-      'user-owned choice',
-      'two or three broad',
-      'node_link with layered groups and explicit edges',
-      'derivative formula',
+      'Route first',
+      'calibration',
+      'complete/full overview',
+      'Each response makes one cognitive move',
+      'Ask at most one focused learner question',
+      'Never repeat a hint, analogy, question, or explanation fingerprint',
+      'Stop after independent fresh transfer',
+      'Ordinary conversation is the default',
+      'Use a visual only when one relationship is materially clearer',
+      'learning_state_update',
+      'move fingerprint',
     ]) {
       expect(LEARNING_TEACHING_POLICY).toContain(phrase)
     }

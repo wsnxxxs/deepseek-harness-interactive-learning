@@ -15,6 +15,7 @@ export declare const MAX_PRIOR_KNOWLEDGE = 8;
 export declare const MAX_MISCONCEPTIONS = 6;
 export declare const MAX_SOURCE_ANCHORS = 8;
 export declare const MAX_PLAN_STEPS = 6;
+export declare const MAX_FAILED_MOVES = 6;
 export declare const DEFAULT_TRANSCRIPT_TOKEN_BUDGET = 300;
 export type LearnerRequestKind = 'concept' | 'procedure' | 'topic' | 'source-study' | 'practice' | 'resource' | 'direct-task' | 'unknown';
 export type LearnerLevel = 'novice' | 'intermediate' | 'advanced' | 'unknown';
@@ -26,6 +27,10 @@ export type LearnerUrgency = 'none' | 'initial-blocker' | 'later-pressure' | 'un
 export type LearnerSupportLevel = 0 | 1 | 2 | 3 | 4 | 5;
 export type LearnerAssessmentContext = 'self-study' | 'graded' | 'unknown';
 export type LearnerMastery = 'unseen' | 'emerging' | 'transfer';
+export type LearnerMasteryBasis = 'evidence' | 'user-correction';
+export type LearnerPhase = 'orient' | 'teach' | 'practice' | 'repair' | 'transfer' | 'complete';
+export type LearnerResponseAssessment = 'correct' | 'partial' | 'incorrect' | 'no-evidence';
+export type LearnerNextMove = 'calibrate' | 'direct' | 'explain' | 'example' | 'guided_discovery' | 'worked_example' | 'reflective_pause' | 'resource' | 'question' | 'repair' | 'transfer' | 'complete';
 /**
  * A step in the session's learning route.
  *
@@ -45,13 +50,23 @@ export interface LearnerPlan {
     objective: string;
     steps: readonly LearnerPlanStep[];
 }
-export type LearnerTeachingMove = 'none' | 'visual' | 'checkpoint';
+export type LearnerTeachingMove = 'none' | 'explanation' | 'example' | 'question' | 'guided_discovery' | 'worked_example' | 'reflective_pause' | 'resource' | 'repair' | 'transfer' | 'visual' | 'checkpoint';
 export type LearnerEvidenceKind = 'attempt' | 'prediction' | 'explanation' | 'contrast' | 'transfer' | 'error';
 export type LearnerEvidenceConfidence = 'low' | 'medium' | 'high';
-export type LearnerEvidenceCorrectness = 'correct' | 'incorrect' | 'unknown';
+export type LearnerEvidenceCorrectness = 'correct' | 'partial' | 'incorrect' | 'unknown';
 export type LearnerEvidenceIndependence = 'independent' | 'guided' | 'unknown';
 export type LearnerTransferContext = 'same' | 'fresh' | 'unknown';
 type NonTransferEvidenceKind = Exclude<LearnerEvidenceKind, 'transfer'>;
+export type LearnerMoveFailureReason = 'not-understood' | 'repeated-misconception' | 'unhelpful-hint' | 'wrong-representation' | 'no-progress' | 'unavailable' | 'unknown';
+export interface LearnerFailedMove {
+    move: LearnerTeachingMove;
+    fingerprint: string;
+    failureReason: LearnerMoveFailureReason;
+    /** Optional plain-language representation, such as “arrival-order analogy”. */
+    representation?: string;
+    summary: string;
+    turn?: number;
+}
 export type ObservableEventSource = 'learner-message' | 'learner-action' | 'assistant-output' | 'source-material' | 'user-correction';
 export interface ObservableLearnerEvent {
     /** Stable within one session; a replay with the same id is ignored. */
@@ -109,7 +124,20 @@ export interface LearnerState {
     supportLevel: LearnerSupportLevel;
     assessmentContext: LearnerAssessmentContext;
     mastery: LearnerMastery;
+    /** Why the current tentative mastery value is authoritative. */
+    masteryBasis: LearnerMasteryBasis;
     evidence: readonly LearnerEvidence[];
+    /** Bounded history of representations or hints that failed and why. */
+    failedMoves: readonly LearnerFailedMove[];
+    /** Current stage in the minimal teaching loop, not a lesson counter. */
+    phase: LearnerPhase;
+    lastExplanationSummary: string | null;
+    lastQuestion: string | null;
+    learnerResponseAssessment: LearnerResponseAssessment;
+    currentMisconception: string | null;
+    nextMove: LearnerNextMove;
+    /** Stable semantic identity of the last teaching move; used to avoid repeats. */
+    moveFingerprint: string | null;
     lastMove: LearnerTeachingMove;
     sourceAnchors: readonly string[];
     /** The session's tentative route toward the goal; null when none is warranted. */
@@ -176,8 +204,26 @@ export type LearnerStateEvent = {
     evidence: LearnerEvidenceInput;
     observation: ObservableLearnerEvent;
 } | {
+    type: 'failed_move_observed';
+    failedMove: {
+        move: LearnerTeachingMove;
+        fingerprint: string;
+        failureReason: LearnerMoveFailureReason;
+        representation?: string;
+        summary?: string;
+        turn?: number;
+    };
+    observation: ObservableLearnerEvent;
+} | {
     type: 'assistant_move_observed';
     move: LearnerTeachingMove;
+    phase?: LearnerPhase;
+    explanationSummary?: string | null;
+    question?: string | null;
+    learnerResponseAssessment?: LearnerResponseAssessment;
+    currentMisconception?: string | null;
+    nextMove?: LearnerNextMove;
+    moveFingerprint?: string;
     observation: ObservableLearnerEvent;
 } | {
     type: 'source_anchors_observed';
@@ -206,6 +252,14 @@ export interface LearnerStateCorrection {
     assessmentContext?: LearnerAssessmentContext;
     mastery?: LearnerMastery;
     evidence?: readonly LearnerEvidenceInput[];
+    failedMoves?: readonly LearnerFailedMove[];
+    phase?: LearnerPhase;
+    lastExplanationSummary?: string | null;
+    lastQuestion?: string | null;
+    learnerResponseAssessment?: LearnerResponseAssessment;
+    currentMisconception?: string | null;
+    nextMove?: LearnerNextMove;
+    moveFingerprint?: string | null;
     lastMove?: LearnerTeachingMove;
     sourceAnchors?: readonly string[];
 }

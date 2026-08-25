@@ -1,5 +1,5 @@
 /**
- * Earliest-load compatibility hook for the installable Learning package.
+ * Compatibility hook for the installable Learning package.
  *
  * The portable runtime statically imports this package's preset entry before
  * boot and before persistence can load a session. Keep required session-event

@@ -253,6 +253,35 @@ describe('non-blocking LearningVisual v3', () => {
 })
 
 describe('learning_visual tool-call replay', () => {
+  it('emits a Host-bridgeable recall rating with session, call, and card identity', () => {
+    const visual = visualV4Catalog.derivativeRecallDeck
+    const events: Array<{ name: string; sessionId?: string; callId?: string; cardId?: string; status?: string }> = []
+    const unsubscribe = subscribeLearningUiLifecycle(event => events.push(event))
+    render(
+      <ToolView
+        block={completedVisualV4Block(visual, 'call_recall_bridge')}
+        inspect={() => {}}
+        t={t}
+        sessionId="session_recall_bridge"
+        useSession={useEmptySession}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: en.visualShowHint }))
+    expect(events.filter(event => event.name === 'learning.recall.rated')).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: en.visualShowAnswer }))
+    expect(events.filter(event => event.name === 'learning.recall.rated')).toHaveLength(1)
+    expect(events.at(-1)).toMatchObject({ status: 'revealed', cardId: 'power_rule' })
+    fireEvent.click(screen.getByRole('button', { name: en.visualReviewAgain }))
+    unsubscribe()
+    expect(events.at(-1)).toMatchObject({
+      name: 'learning.recall.rated',
+      sessionId: 'session_recall_bridge',
+      callId: 'call_recall_bridge',
+      cardId: 'power_rule',
+      status: 'review',
+    })
+  })
+
   it('shows a neutral running state only until arguments form a valid visual', () => {
     const events: string[] = []
     const unsubscribe = subscribeLearningUiLifecycle(event => events.push(event.name))
@@ -366,12 +395,18 @@ describe('semantic LearningVisual v4 completed ToolView gallery', () => {
       expect(root?.querySelectorAll('[data-visual-id^="v_"]')).toHaveLength(8)
       const inputNode = root?.querySelector('[data-visual-id="x1"]')
       const hiddenNode = root?.querySelector('[data-visual-id="h1"]')
-      expect(inputNode?.getAttribute('data-focus-state')).toBe('focus')
-      expect(hiddenNode?.getAttribute('data-focus-state')).toBe('dim')
+      // Frame 1 focuses the input layer. The hidden units the inputs feed are
+      // where that signal goes, so they stay legible context rather than being
+      // faded out of the figure.
+      expect(inputNode?.getAttribute('data-visual-state')).toBe('current')
+      expect(hiddenNode?.getAttribute('data-visual-state')).toBe('related')
       fireEvent.click(screen.getByRole('button', { name: en.visualNextStep }))
-      expect(hiddenNode?.getAttribute('data-focus-state')).toBe('focus')
+      expect(hiddenNode?.getAttribute('data-visual-state')).toBe('current')
+      // The layer the previous frame covered is marked as already seen, not dropped.
+      expect(inputNode?.getAttribute('data-visual-state')).toBe('related')
       fireEvent.click(hiddenNode as Element)
       expect(hiddenNode?.getAttribute('data-selected')).toBe('true')
+      expect(hiddenNode?.getAttribute('data-visual-state')).toBe('selected')
       expect(screen.getByText('隐藏单元：加权求和后通过激活函数')).toBeTruthy()
       return
     }
@@ -449,6 +484,47 @@ describe('semantic LearningVisual v4 completed ToolView gallery', () => {
       expect(root?.getAttribute('data-render-state')).toBe('ready')
       expect(root?.querySelector('[data-visual-id="power_rule"]')).toBeNull()
       expect(root?.querySelector('[data-visual-id="product_rule"]')?.getAttribute('data-stage')).toBe('prompt')
+      return
+    }
+
+    if (visual.content.kind === 'data_table') {
+      expect(root?.querySelector('table')).toBeTruthy()
+      expect(root?.querySelector('[data-visual-id="record_d"]')).toBeTruthy()
+      return
+    }
+
+    if (visual.content.kind === 'state_transition') {
+      expect(root?.querySelector('[data-visual-id="draft"]')).toBeTruthy()
+      expect(root?.querySelector('[data-visual-id="submit"]')).toBeTruthy()
+      return
+    }
+
+    if (visual.content.kind === 'sequence_buffer') {
+      expect(root?.querySelector('[data-visual-id="slot_0"]')).toBeTruthy()
+      expect(root?.querySelector('[data-visual-id="window"]')).toBeTruthy()
+      return
+    }
+
+    if (visual.content.kind === 'sequence_diagram') {
+      expect(root?.querySelector('[data-visual-id="client"]')).toBeTruthy()
+      expect(root?.querySelector('[data-visual-id="request"]')).toBeTruthy()
+      return
+    }
+
+    if (visual.content.kind === 'code_trace') {
+      expect(root?.querySelector('pre, code')).toBeTruthy()
+      expect(root?.querySelector('[data-visual-id="trace_init"]')).toBeTruthy()
+      return
+    }
+
+    if (visual.content.kind === 'field_2d') {
+      expect(root?.querySelector('svg, canvas')).toBeTruthy()
+      return
+    }
+
+    if (visual.content.kind === 'causal_loop') {
+      expect(root?.querySelector('[data-visual-id="users"]')).toBeTruthy()
+      expect(root?.querySelector('[data-visual-id="growth_loop"]')).toBeTruthy()
       return
     }
 
@@ -701,6 +777,7 @@ describe('learning_checkpoint client gate and replay', () => {
       checkpointId: harness.checkpointId,
       receiptId: `receipt_${harness.waitId}`,
       status,
+      reason: status === 'skipped' ? 'learner-skipped' : 'learner-cancelled',
     })
     await waitFor(() => expect(sessionStorage.getItem(`dsh-learning/checkpoint@1:${harness.waitId}`)).toBeNull())
   })

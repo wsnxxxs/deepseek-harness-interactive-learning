@@ -8,15 +8,17 @@ describe('preset isolation', () => {
   it('mounts the model-facing entry only in the learning preset', () => {
     const learning = readFileSync(join(packageRoot, 'preset/learning/agent.cordis.yml'), 'utf8')
     expect(learning.match(/@dsh-portable\/interactive-learning\/agent/g)).toHaveLength(1)
-    expect(learning.match(/@deepseek-ai\/dsh-tool-ask-user/g)).toHaveLength(1)
+    expect(learning).not.toContain('@deepseek-ai/dsh-tool-ask-user')
     const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')) as {
       peerDependencies?: Record<string, string>
       peerDependenciesMeta?: Record<string, { optional?: boolean }>
       dependencies?: Record<string, string>
+      devDependencies?: Record<string, string>
     }
     expect(manifest.dependencies?.['@deepseek-ai/dsh-tool-ask-user']).toBeUndefined()
-    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-tool-ask-user']).toBe('*')
-    expect(manifest.peerDependenciesMeta?.['@deepseek-ai/dsh-tool-ask-user']?.optional).toBe(true)
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-tool-ask-user']).toBeUndefined()
+    expect(manifest.peerDependenciesMeta?.['@deepseek-ai/dsh-tool-ask-user']).toBeUndefined()
+    expect(manifest.devDependencies?.['@deepseek-ai/dsh-tool-ask-user']).toBeUndefined()
   })
 
   it('keeps the Host entry free of tool and prompt registration', () => {

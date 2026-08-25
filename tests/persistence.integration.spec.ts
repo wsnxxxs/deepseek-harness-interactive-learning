@@ -108,9 +108,9 @@ describe('Learning state durable load order', () => {
     // the runtime's real pre-boot preset import boundary before any load.
     known.delete('learning/state')
     expect(known.has('learning/state')).toBe(false)
+
     await import('../src/preset.ts?durable-reboot-preboot')
     expect(known.has('learning/state')).toBe(true)
-
     const second = await mountPersistence(root)
     const loaded = await second.sessionPersistence.load(sessionId)
     expect(loaded.events.some(event => event.type === 'learning/state')).toBe(true)

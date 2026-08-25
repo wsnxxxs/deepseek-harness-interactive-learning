@@ -18,6 +18,7 @@ export const MAX_PRIOR_KNOWLEDGE = 8
 export const MAX_MISCONCEPTIONS = 6
 export const MAX_SOURCE_ANCHORS = 8
 export const MAX_PLAN_STEPS = 6
+export const MAX_FAILED_MOVES = 6
 export const DEFAULT_TRANSCRIPT_TOKEN_BUDGET = 300
 
 const MAX_STORED_TEXT = 240
@@ -61,6 +62,22 @@ export type LearnerUrgency =
 export type LearnerSupportLevel = 0 | 1 | 2 | 3 | 4 | 5
 export type LearnerAssessmentContext = 'self-study' | 'graded' | 'unknown'
 export type LearnerMastery = 'unseen' | 'emerging' | 'transfer'
+export type LearnerMasteryBasis = 'evidence' | 'user-correction'
+export type LearnerPhase = 'orient' | 'teach' | 'practice' | 'repair' | 'transfer' | 'complete'
+export type LearnerResponseAssessment = 'correct' | 'partial' | 'incorrect' | 'no-evidence'
+export type LearnerNextMove =
+  | 'calibrate'
+  | 'direct'
+  | 'explain'
+  | 'example'
+  | 'guided_discovery'
+  | 'worked_example'
+  | 'reflective_pause'
+  | 'resource'
+  | 'question'
+  | 'repair'
+  | 'transfer'
+  | 'complete'
 
 /**
  * A step in the session's learning route.
@@ -86,6 +103,15 @@ export interface LearnerPlan {
 
 export type LearnerTeachingMove =
   | 'none'
+  | 'explanation'
+  | 'example'
+  | 'question'
+  | 'guided_discovery'
+  | 'worked_example'
+  | 'reflective_pause'
+  | 'resource'
+  | 'repair'
+  | 'transfer'
   | 'visual'
   | 'checkpoint'
 
@@ -98,10 +124,29 @@ export type LearnerEvidenceKind =
   | 'error'
 
 export type LearnerEvidenceConfidence = 'low' | 'medium' | 'high'
-export type LearnerEvidenceCorrectness = 'correct' | 'incorrect' | 'unknown'
+export type LearnerEvidenceCorrectness = 'correct' | 'partial' | 'incorrect' | 'unknown'
 export type LearnerEvidenceIndependence = 'independent' | 'guided' | 'unknown'
 export type LearnerTransferContext = 'same' | 'fresh' | 'unknown'
 type NonTransferEvidenceKind = Exclude<LearnerEvidenceKind, 'transfer'>
+
+export type LearnerMoveFailureReason =
+  | 'not-understood'
+  | 'repeated-misconception'
+  | 'unhelpful-hint'
+  | 'wrong-representation'
+  | 'no-progress'
+  | 'unavailable'
+  | 'unknown'
+
+export interface LearnerFailedMove {
+  move: LearnerTeachingMove
+  fingerprint: string
+  failureReason: LearnerMoveFailureReason
+  /** Optional plain-language representation, such as “arrival-order analogy”. */
+  representation?: string
+  summary: string
+  turn?: number
+}
 
 export type ObservableEventSource =
   | 'learner-message'
@@ -163,7 +208,20 @@ export interface LearnerState {
   supportLevel: LearnerSupportLevel
   assessmentContext: LearnerAssessmentContext
   mastery: LearnerMastery
+  /** Why the current tentative mastery value is authoritative. */
+  masteryBasis: LearnerMasteryBasis
   evidence: readonly LearnerEvidence[]
+  /** Bounded history of representations or hints that failed and why. */
+  failedMoves: readonly LearnerFailedMove[]
+  /** Current stage in the minimal teaching loop, not a lesson counter. */
+  phase: LearnerPhase
+  lastExplanationSummary: string | null
+  lastQuestion: string | null
+  learnerResponseAssessment: LearnerResponseAssessment
+  currentMisconception: string | null
+  nextMove: LearnerNextMove
+  /** Stable semantic identity of the last teaching move; used to avoid repeats. */
+  moveFingerprint: string | null
   lastMove: LearnerTeachingMove
   sourceAnchors: readonly string[]
   /** The session's tentative route toward the goal; null when none is warranted. */
@@ -241,8 +299,27 @@ export type LearnerStateEvent =
       observation: ObservableLearnerEvent
     }
   | {
+      type: 'failed_move_observed'
+      failedMove: {
+        move: LearnerTeachingMove
+        fingerprint: string
+        failureReason: LearnerMoveFailureReason
+        representation?: string
+        summary?: string
+        turn?: number
+      }
+      observation: ObservableLearnerEvent
+    }
+  | {
       type: 'assistant_move_observed'
       move: LearnerTeachingMove
+      phase?: LearnerPhase
+      explanationSummary?: string | null
+      question?: string | null
+      learnerResponseAssessment?: LearnerResponseAssessment
+      currentMisconception?: string | null
+      nextMove?: LearnerNextMove
+      moveFingerprint?: string
       observation: ObservableLearnerEvent
     }
   | {
@@ -272,6 +349,14 @@ export interface LearnerStateCorrection {
   assessmentContext?: LearnerAssessmentContext
   mastery?: LearnerMastery
   evidence?: readonly LearnerEvidenceInput[]
+  failedMoves?: readonly LearnerFailedMove[]
+  phase?: LearnerPhase
+  lastExplanationSummary?: string | null
+  lastQuestion?: string | null
+  learnerResponseAssessment?: LearnerResponseAssessment
+  currentMisconception?: string | null
+  nextMove?: LearnerNextMove
+  moveFingerprint?: string | null
   lastMove?: LearnerTeachingMove
   sourceAnchors?: readonly string[]
 }
@@ -330,8 +415,22 @@ const ASSESSMENT_CONTEXTS: ReadonlySet<string> = new Set<LearnerAssessmentContex
 const MASTERY_VALUES: ReadonlySet<string> = new Set<LearnerMastery>([
   'unseen', 'emerging', 'transfer',
 ])
+const MASTERY_BASES: ReadonlySet<string> = new Set<LearnerMasteryBasis>([
+  'evidence', 'user-correction',
+])
+const PHASE_VALUES: ReadonlySet<string> = new Set<LearnerPhase>([
+  'orient', 'teach', 'practice', 'repair', 'transfer', 'complete',
+])
+const RESPONSE_ASSESSMENTS: ReadonlySet<string> = new Set<LearnerResponseAssessment>([
+  'correct', 'partial', 'incorrect', 'no-evidence',
+])
+const NEXT_MOVES: ReadonlySet<string> = new Set<LearnerNextMove>([
+  'calibrate', 'direct', 'explain', 'example', 'guided_discovery', 'worked_example',
+  'reflective_pause', 'resource', 'question', 'repair', 'transfer', 'complete',
+])
 const TEACHING_MOVES: ReadonlySet<string> = new Set<LearnerTeachingMove>([
-  'none', 'visual', 'checkpoint',
+  'none', 'explanation', 'example', 'question', 'guided_discovery', 'worked_example',
+  'reflective_pause', 'resource', 'repair', 'transfer', 'visual', 'checkpoint',
 ])
 const EVIDENCE_KINDS: ReadonlySet<string> = new Set<LearnerEvidenceKind>([
   'attempt', 'prediction', 'explanation', 'contrast', 'transfer', 'error',
@@ -340,13 +439,22 @@ const EVIDENCE_CONFIDENCE: ReadonlySet<string> = new Set<LearnerEvidenceConfiden
   'low', 'medium', 'high',
 ])
 const EVIDENCE_CORRECTNESS: ReadonlySet<string> = new Set<LearnerEvidenceCorrectness>([
-  'correct', 'incorrect', 'unknown',
+  'correct', 'partial', 'incorrect', 'unknown',
 ])
 const EVIDENCE_INDEPENDENCE: ReadonlySet<string> = new Set<LearnerEvidenceIndependence>([
   'independent', 'guided', 'unknown',
 ])
 const TRANSFER_CONTEXTS: ReadonlySet<string> = new Set<LearnerTransferContext>([
   'same', 'fresh', 'unknown',
+])
+const MOVE_FAILURE_REASONS: ReadonlySet<string> = new Set<LearnerMoveFailureReason>([
+  'not-understood',
+  'repeated-misconception',
+  'unhelpful-hint',
+  'wrong-representation',
+  'no-progress',
+  'unavailable',
+  'unknown',
 ])
 const OBSERVABLE_SOURCES: ReadonlySet<string> = new Set<ObservableEventSource>([
   'learner-message', 'learner-action', 'assistant-output', 'source-material', 'user-correction',
@@ -362,6 +470,11 @@ function normalizeRequiredText(value: string, label: string): string {
   const normalized = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim()
   if (!normalized) throw new TypeError(`${label} must not be empty`)
   return [...normalized].slice(0, MAX_STORED_TEXT).join('')
+}
+
+function normalizeOptionalText(value: string | null | undefined, label: string): string | null | undefined {
+  if (value === null || value === undefined) return value
+  return normalizeRequiredText(value, label)
 }
 
 function normalizeSessionId(sessionId: string): string {
@@ -392,6 +505,38 @@ function normalizeSupportLevel(value: number): LearnerSupportLevel {
     throw new TypeError('supportLevel must be an integer from 0 through 5')
   }
   return value as LearnerSupportLevel
+}
+
+function normalizeFailedMove(
+  input: {
+    move: LearnerTeachingMove
+    moveFingerprint: string
+    failureReason: LearnerMoveFailureReason
+    representation?: string
+    summary: string
+    turn?: number
+  },
+  label: string,
+  source?: ObservableLearnerEvent,
+): LearnerFailedMove {
+  const turn = input.turn ?? source?.turn
+  if (turn !== undefined && (!Number.isSafeInteger(turn) || turn < 0)) {
+    throw new TypeError(`${label}.turn must be a non-negative integer`)
+  }
+  return Object.freeze({
+    move: assertEnum(input.move, TEACHING_MOVES, `${label}.move`),
+    fingerprint: normalizeRequiredText(input.moveFingerprint, `${label}.fingerprint`),
+    failureReason: assertEnum(input.failureReason, MOVE_FAILURE_REASONS, `${label}.failureReason`),
+    ...(input.representation === undefined
+      ? {}
+      : { representation: normalizeRequiredText(input.representation, `${label}.representation`) }),
+    summary: normalizeRequiredText(input.summary, `${label}.summary`),
+    ...(turn === undefined ? {} : { turn }),
+  })
+}
+
+function boundFailedMoves(values: readonly LearnerFailedMove[]): readonly LearnerFailedMove[] {
+  return Object.freeze(values.slice(-MAX_FAILED_MOVES).map(item => Object.freeze({ ...item })))
 }
 
 function maxSupportLevel(
@@ -486,6 +631,7 @@ function freezeState(state: LearnerState): LearnerState {
     priorKnowledge: Object.freeze([...state.priorKnowledge]),
     misconceptions: Object.freeze([...state.misconceptions]),
     evidence: freezeEvidence(state.evidence),
+    failedMoves: boundFailedMoves(state.failedMoves),
     sourceAnchors: Object.freeze([...state.sourceAnchors]),
     plan: state.plan === null ? null : Object.freeze({
       objective: state.plan.objective,
@@ -559,7 +705,24 @@ function isIndependentlyCorrectEvidence(evidence: LearnerEvidence): boolean {
   return (evidence.source === 'learner-message' || evidence.source === 'learner-action')
     && evidence.correctness === 'correct'
     && evidence.independence === 'independent'
+    // Low-confidence evidence remains useful as a tentative learning signal,
+    // but is not strong enough to promote emerging or terminal mastery.
+    && evidence.confidence !== 'low'
     && evidence.kind !== 'error'
+}
+
+/**
+ * Some learners demonstrate the target fully in an explanation or a complete
+ * attempt, but the model may reasonably classify that evidence as
+ * `explanation`/`attempt` instead of `transfer`. It is enough to finish this
+ * teaching segment when the evaluation is at least medium-confidence and
+ * independent;
+ * it is deliberately not enough to promote `mastery` to `transfer`, which
+ * still requires explicit fresh-context transfer evidence.
+ */
+function isSufficientForSegmentCompletion(evidence: LearnerEvidence): boolean {
+  return isIndependentlyCorrectEvidence(evidence)
+    && (evidence.kind === 'explanation' || evidence.kind === 'attempt')
 }
 
 function evidenceMastery(evidence: readonly LearnerEvidence[]): LearnerMastery {
@@ -600,7 +763,10 @@ function boundEvidence(
   return freezeEvidence([support, ...recent.slice(-(MAX_LEARNER_EVIDENCE - 1))])
 }
 
-function assertMasteryEvidenceConsistency(state: Pick<LearnerState, 'mastery' | 'evidence'>): void {
+function assertMasteryEvidenceConsistency(
+  state: Pick<LearnerState, 'mastery' | 'masteryBasis' | 'evidence'>,
+): void {
+  if (state.masteryBasis === 'user-correction') return
   const supported = evidenceMastery(state.evidence)
   if (state.mastery === 'transfer' && supported !== 'transfer') {
     throw new TypeError('transfer mastery requires correct, independent learner transfer evidence')
@@ -628,7 +794,16 @@ export function createInitialLearnerState(sessionId: string): LearnerState {
     supportLevel: 0,
     assessmentContext: 'unknown',
     mastery: 'unseen',
+    masteryBasis: 'evidence',
     evidence: [],
+    failedMoves: [],
+    phase: 'orient',
+    lastExplanationSummary: null,
+    lastQuestion: null,
+    learnerResponseAssessment: 'no-evidence',
+    currentMisconception: null,
+    nextMove: 'calibrate',
+    moveFingerprint: null,
     lastMove: 'none',
     sourceAnchors: [],
     plan: null,
@@ -681,18 +856,63 @@ function applyCorrection(
   }
   if (correction.mastery !== undefined) {
     const requested = assertEnum(correction.mastery, MASTERY_VALUES, 'mastery')
-    const ranks: Record<LearnerMastery, number> = { unseen: 0, emerging: 1, transfer: 2 }
-    if (ranks[requested] > ranks[state.mastery]) {
-      throw new TypeError('A user correction cannot upgrade mastery without evaluated independent evidence')
-    }
     next.mastery = requested
+    next.masteryBasis = 'user-correction'
   }
   if (correction.evidence !== undefined) {
     const normalized = correction.evidence.map(item => normalizeEvidence(item, observation))
     if (correction.mastery === undefined) {
       next.mastery = evidenceMastery(normalized)
+      next.masteryBasis = 'evidence'
     }
     next.evidence = boundEvidence(normalized, next.mastery)
+  }
+  if (correction.failedMoves !== undefined) {
+    next.failedMoves = boundFailedMoves(correction.failedMoves.map((item, index) => normalizeFailedMove({
+      move: item.move,
+      moveFingerprint: item.fingerprint,
+      failureReason: item.failureReason,
+      representation: item.representation,
+      summary: item.summary,
+      turn: item.turn,
+    }, `failedMoves[${String(index)}]`)))
+  }
+  if (correction.phase !== undefined) {
+    next.phase = assertEnum(correction.phase, PHASE_VALUES, 'phase')
+  }
+  if (Object.hasOwn(correction, 'lastExplanationSummary')) {
+    next.lastExplanationSummary = normalizeOptionalText(
+      correction.lastExplanationSummary,
+      'lastExplanationSummary',
+    ) ?? null
+  }
+  if (Object.hasOwn(correction, 'lastQuestion')) {
+    next.lastQuestion = normalizeOptionalText(correction.lastQuestion, 'lastQuestion') ?? null
+  }
+  if (correction.learnerResponseAssessment !== undefined) {
+    next.learnerResponseAssessment = assertEnum(
+      correction.learnerResponseAssessment,
+      RESPONSE_ASSESSMENTS,
+      'learnerResponseAssessment',
+    )
+  }
+  if (Object.hasOwn(correction, 'currentMisconception')) {
+    next.currentMisconception = normalizeOptionalText(
+      correction.currentMisconception,
+      'currentMisconception',
+    ) ?? null
+  }
+  if (correction.nextMove !== undefined) {
+    next.nextMove = assertEnum(correction.nextMove, NEXT_MOVES, 'nextMove')
+  }
+  // A learner may explicitly end questioning without certifying transfer; an
+  // explicit transfer correction also completes the current segment.
+  if (next.mastery === 'transfer' || next.phase === 'complete' || next.nextMove === 'complete') {
+    next.phase = 'complete'
+    next.nextMove = 'complete'
+  }
+  if (Object.hasOwn(correction, 'moveFingerprint')) {
+    next.moveFingerprint = normalizeOptionalText(correction.moveFingerprint, 'moveFingerprint') ?? null
   }
   if (correction.lastMove !== undefined) {
     next.lastMove = assertEnum(correction.lastMove, TEACHING_MOVES, 'lastMove')
@@ -805,6 +1025,7 @@ export function reduceLearnerState(state: LearnerState, event: LearnerStateEvent
               MAX_MISCONCEPTIONS,
               'misconceptions',
             )
+        next.currentMisconception = next.misconceptions.at(-1) ?? null
       }
       break
     case 'readiness_observed':
@@ -819,8 +1040,12 @@ export function reduceLearnerState(state: LearnerState, event: LearnerStateEvent
       next.progressSignal = assertEnum(event.progressSignal, PROGRESS_SIGNALS, 'progressSignal')
       if (next.progressSignal === 'stuck') {
         next.supportLevel = maxSupportLevel(state.supportLevel, 4)
+        next.phase = 'repair'
+        next.nextMove = 'repair'
       } else if (next.progressSignal === 'shutdown-risk') {
         next.supportLevel = 5
+        next.phase = 'repair'
+        next.nextMove = 'direct'
       } else if (next.progressSignal === 'progressing') {
         next.supportLevel = lowerSupportLevel(state.supportLevel)
       }
@@ -837,8 +1062,37 @@ export function reduceLearnerState(state: LearnerState, event: LearnerStateEvent
       break
     case 'learner_evidence_observed': {
       const evidence = normalizeEvidence(event.evidence, observation)
+      const observedMastery = evidenceMastery([evidence])
       next.mastery = masteryFromEvidence(state.mastery, [evidence])
+      next.masteryBasis = observedMastery !== 'unseen' && observedMastery === next.mastery
+        ? 'evidence'
+        : state.masteryBasis
       next.evidence = boundEvidence([...state.evidence, evidence], next.mastery)
+      next.learnerResponseAssessment = evidence.correctness === 'correct'
+        ? 'correct'
+        : evidence.correctness === 'partial'
+          ? 'partial'
+        : evidence.correctness === 'incorrect'
+          ? 'incorrect'
+          : 'no-evidence'
+      if (evidence.correctness === 'incorrect') {
+        next.phase = 'repair'
+        next.nextMove = 'repair'
+      } else if (evidence.correctness === 'partial') {
+        next.phase = 'practice'
+        next.nextMove = 'guided_discovery'
+      } else if (evidence.correctness === 'correct' && evidence.kind === 'transfer') {
+        next.phase = next.mastery === 'transfer' ? 'complete' : 'practice'
+        next.nextMove = next.mastery === 'transfer' ? 'complete' : 'transfer'
+      } else if (evidence.correctness === 'correct' && isSufficientForSegmentCompletion(evidence)) {
+        // A complete, independently evaluated explanation/attempt may end the
+        // current segment without pretending that it proved fresh transfer.
+        next.phase = 'complete'
+        next.nextMove = 'complete'
+      } else if (evidence.correctness === 'correct') {
+        next.phase = 'practice'
+        next.nextMove = 'transfer'
+      }
       if (isIndependentlyCorrectEvidence(evidence)) {
         next.supportLevel = evidence.kind === 'transfer' && evidence.transferContext === 'fresh'
           ? 0
@@ -854,11 +1108,68 @@ export function reduceLearnerState(state: LearnerState, event: LearnerStateEvent
       }
       break
     }
+    case 'failed_move_observed': {
+      const failed = normalizeFailedMove({
+        move: event.failedMove.move,
+        moveFingerprint: event.failedMove.fingerprint,
+        failureReason: event.failedMove.failureReason,
+        representation: event.failedMove.representation,
+        summary: event.failedMove.summary ?? observation.summary,
+        turn: event.failedMove.turn,
+      }, 'failedMove', observation)
+      next.failedMoves = boundFailedMoves([...state.failedMoves, failed])
+      next.nextMove = 'repair'
+      next.phase = 'repair'
+      break
+    }
     case 'assistant_move_observed':
       if (observation.source !== 'assistant-output') {
         throw new TypeError('An assistant move must be observed from assistant output')
       }
       next.lastMove = assertEnum(event.move, TEACHING_MOVES, 'lastMove')
+      if (event.moveFingerprint !== undefined) {
+        const fingerprint = normalizeRequiredText(event.moveFingerprint, 'moveFingerprint')
+        if (fingerprint === state.moveFingerprint) {
+          throw new TypeError('moveFingerprint must change when the teaching move changes')
+        }
+        next.moveFingerprint = fingerprint
+      }
+      const movePhase: Partial<Record<LearnerTeachingMove, LearnerPhase>> = {
+        explanation: 'teach',
+        example: 'teach',
+        guided_discovery: 'practice',
+        worked_example: 'teach',
+        reflective_pause: 'practice',
+        resource: 'teach',
+        question: 'practice',
+        repair: 'repair',
+        transfer: 'transfer',
+        visual: 'teach',
+        checkpoint: 'practice',
+      }
+      next.phase = event.phase === undefined
+        ? movePhase[event.move] ?? state.phase
+        : assertEnum(event.phase, PHASE_VALUES, 'phase')
+      if (Object.hasOwn(event, 'explanationSummary')) {
+        next.lastExplanationSummary = normalizeOptionalText(event.explanationSummary, 'explanationSummary') ?? null
+      }
+      if (Object.hasOwn(event, 'question')) {
+        next.lastQuestion = normalizeOptionalText(event.question, 'question') ?? null
+      }
+      if (event.learnerResponseAssessment !== undefined) {
+        next.learnerResponseAssessment = assertEnum(
+          event.learnerResponseAssessment,
+          RESPONSE_ASSESSMENTS,
+          'learnerResponseAssessment',
+        )
+      }
+      if (Object.hasOwn(event, 'currentMisconception')) {
+        next.currentMisconception = normalizeOptionalText(
+          event.currentMisconception,
+          'currentMisconception',
+        ) ?? null
+      }
+      if (event.nextMove !== undefined) next.nextMove = assertEnum(event.nextMove, NEXT_MOVES, 'nextMove')
       break
     case 'source_anchors_observed':
       next.sourceAnchors = event.mode === 'replace'
@@ -913,12 +1224,31 @@ const SNAPSHOT_KEYS = [
   'supportLevel',
   'assessmentContext',
   'mastery',
+  'masteryBasis',
   'evidence',
+  'failedMoves',
+  'phase',
+  'lastExplanationSummary',
+  'lastQuestion',
+  'learnerResponseAssessment',
+  'currentMisconception',
+  'nextMove',
+  'moveFingerprint',
   'lastMove',
   'sourceAnchors',
   'plan',
   'appliedEventIds',
 ] as const
+const TEACHING_MEMORY_KEYS = [
+  'phase',
+  'lastExplanationSummary',
+  'lastQuestion',
+  'learnerResponseAssessment',
+  'currentMisconception',
+  'nextMove',
+  'moveFingerprint',
+] as const
+const OPTIONAL_MEMORY_KEYS = [...TEACHING_MEMORY_KEYS, 'failedMoves', 'masteryBasis'] as const
 
 function asRecord(value: unknown, label: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -1040,6 +1370,36 @@ function parseSnapshotEvidence(value: unknown): readonly LearnerEvidence[] {
   }))
 }
 
+function parseSnapshotFailedMoves(value: unknown): readonly LearnerFailedMove[] {
+  if (!Array.isArray(value)) throw new TypeError('learner state snapshot failedMoves must be an array')
+  if (value.length > MAX_FAILED_MOVES) {
+    throw new TypeError(`learner state snapshot failedMoves exceeds its item limit of ${MAX_FAILED_MOVES}`)
+  }
+  const parsed = value.map((item, index) => {
+    const record = asRecord(item, `learner state snapshot failedMoves[${String(index)}]`)
+    assertExactKeys(
+      record,
+      ['move', 'fingerprint', 'failureReason', 'summary'],
+      ['representation', 'turn'],
+      `learner state snapshot failedMoves[${String(index)}]`,
+    )
+    const turn = record.turn === undefined
+      ? undefined
+      : strictNonNegativeInteger(record.turn, `learner state snapshot failedMoves[${String(index)}].turn`)
+    return normalizeFailedMove({
+      move: strictString(record.move, `learner state snapshot failedMoves[${String(index)}].move`) as LearnerTeachingMove,
+      moveFingerprint: strictString(record.fingerprint, `learner state snapshot failedMoves[${String(index)}].fingerprint`),
+      failureReason: strictString(record.failureReason, `learner state snapshot failedMoves[${String(index)}].failureReason`) as LearnerMoveFailureReason,
+      ...(record.representation === undefined
+        ? {}
+        : { representation: strictString(record.representation, `learner state snapshot failedMoves[${String(index)}].representation`) }),
+      summary: strictString(record.summary, `learner state snapshot failedMoves[${String(index)}].summary`),
+      ...(turn === undefined ? {} : { turn }),
+    }, `learner state snapshot failedMoves[${String(index)}]`)
+  })
+  return boundFailedMoves(parsed)
+}
+
 function parseAppliedEventFence(value: unknown): readonly AppliedLearnerStateEvent[] {
   if (!Array.isArray(value)) throw new TypeError('learner state snapshot appliedEventIds must be an array')
   if (value.length > MAX_APPLIED_EVENT_IDS) {
@@ -1076,7 +1436,19 @@ function parseAppliedEventFence(value: unknown): readonly AppliedLearnerStateEve
  */
 export function parseLearnerStateSnapshot(value: unknown, expectedSessionId: string): LearnerState {
   const record = parseSnapshotInput(value, 'learner state snapshot')
-  assertExactKeys(record, SNAPSHOT_KEYS, [], 'learner state snapshot')
+  const missingTeachingMemory = TEACHING_MEMORY_KEYS.filter(key => !Object.hasOwn(record, key))
+  if (missingTeachingMemory.length > 0 && missingTeachingMemory.length < TEACHING_MEMORY_KEYS.length) {
+    throw new TypeError(`learner state snapshot is missing required field: ${missingTeachingMemory[0]}`)
+  }
+  const requiredSnapshotKeys = SNAPSHOT_KEYS.filter(
+    key => !(OPTIONAL_MEMORY_KEYS as readonly string[]).includes(key),
+  )
+  assertExactKeys(
+    record,
+    requiredSnapshotKeys,
+    OPTIONAL_MEMORY_KEYS,
+    'learner state snapshot',
+  )
   if (record.protocol !== LEARNER_STATE_PROTOCOL) {
     throw new TypeError(`learner state snapshot protocol must be ${LEARNER_STATE_PROTOCOL}`)
   }
@@ -1142,7 +1514,42 @@ export function parseLearnerStateSnapshot(value: unknown, expectedSessionId: str
       MASTERY_VALUES,
       'learner state snapshot mastery',
     ) as LearnerMastery,
+    masteryBasis: record.masteryBasis === undefined
+      ? 'evidence'
+      : assertEnum(
+          strictString(record.masteryBasis, 'learner state snapshot masteryBasis'),
+          MASTERY_BASES,
+          'learner state snapshot masteryBasis',
+        ) as LearnerMasteryBasis,
     evidence: parseSnapshotEvidence(record.evidence),
+    failedMoves: record.failedMoves === undefined ? [] : parseSnapshotFailedMoves(record.failedMoves),
+    phase: assertEnum(
+      strictString(record.phase ?? 'orient', 'learner state snapshot phase'),
+      PHASE_VALUES,
+      'learner state snapshot phase',
+    ) as LearnerPhase,
+    lastExplanationSummary: record.lastExplanationSummary === undefined || record.lastExplanationSummary === null
+      ? null
+      : strictString(record.lastExplanationSummary, 'learner state snapshot lastExplanationSummary'),
+    lastQuestion: record.lastQuestion === undefined || record.lastQuestion === null
+      ? null
+      : strictString(record.lastQuestion, 'learner state snapshot lastQuestion'),
+    learnerResponseAssessment: assertEnum(
+      strictString(record.learnerResponseAssessment ?? 'no-evidence', 'learner state snapshot learnerResponseAssessment'),
+      RESPONSE_ASSESSMENTS,
+      'learner state snapshot learnerResponseAssessment',
+    ) as LearnerResponseAssessment,
+    currentMisconception: record.currentMisconception === undefined || record.currentMisconception === null
+      ? null
+      : strictString(record.currentMisconception, 'learner state snapshot currentMisconception'),
+    nextMove: assertEnum(
+      strictString(record.nextMove ?? 'calibrate', 'learner state snapshot nextMove'),
+      NEXT_MOVES,
+      'learner state snapshot nextMove',
+    ) as LearnerNextMove,
+    moveFingerprint: record.moveFingerprint === undefined || record.moveFingerprint === null
+      ? null
+      : strictString(record.moveFingerprint, 'learner state snapshot moveFingerprint'),
     lastMove: assertEnum(
       strictString(record.lastMove, 'learner state snapshot lastMove'),
       TEACHING_MOVES,
@@ -1223,7 +1630,10 @@ function assertResetSnapshot(snapshot: LearnerState): void {
   const initial = createInitialLearnerState(snapshot.sessionId)
   const pedagogicalKeys = [
     'goal', 'requestKind', 'level', 'priorKnowledge', 'gap', 'misconceptions', 'readiness',
-    'progressSignal', 'urgency', 'supportLevel', 'assessmentContext', 'mastery', 'evidence',
+    'progressSignal', 'urgency', 'supportLevel', 'assessmentContext', 'mastery', 'masteryBasis', 'evidence',
+    'failedMoves',
+    'phase', 'lastExplanationSummary', 'lastQuestion', 'learnerResponseAssessment',
+    'currentMisconception', 'nextMove', 'moveFingerprint',
     'lastMove', 'sourceAnchors', 'plan',
   ] as const
   for (const key of pedagogicalKeys) {
@@ -1298,8 +1708,16 @@ function safeQuoted(value: string, maxCodePoints = 120): string {
     .replace(/&/g, '\\u0026')
 }
 
-function safeList(values: readonly string[]): string {
-  return `[${values.map(value => safeQuoted(value, 80)).join(', ')}]`
+function safeList(
+  values: readonly string[],
+  maxCodePoints = 80,
+  maxItems = values.length,
+): string {
+  // Keep the projection useful when one source heading or misconception is
+  // unusually long. A whole list is admitted as one transcript line, so an
+  // unbounded item could otherwise make the line fail the budget and discard
+  // the entire memory field.
+  return `[${values.slice(-maxItems).map(value => safeQuoted(value, maxCodePoints)).join(', ')}]`
 }
 
 /** A conservative tokenizer-free estimate suitable for enforcing a prompt budget. */
@@ -1361,6 +1779,9 @@ export function renderLearnerStateTranscript(
     { order: 120, priority: 100, text: `mastery: ${state.mastery}` },
   ]
   for (const line of core.sort((left, right) => right.priority - left.priority)) admit(line)
+  if (state.masteryBasis === 'user-correction') {
+    admit({ order: 121, priority: 100, text: 'mastery_basis: user-correction' })
+  }
 
   if (state.goal === null) {
     admit({ order: 10, priority: 100, text: 'goal: unknown' })
@@ -1378,13 +1799,46 @@ export function renderLearnerStateTranscript(
     { order: 70, priority: 82, text: `readiness: ${state.readiness}` },
     { order: 90, priority: 86, text: `urgency: ${state.urgency}` },
     { order: 110, priority: 76, text: `assessment_context: ${state.assessmentContext}` },
+    { order: 125, priority: 92, text: `phase: ${state.phase}` },
+    { order: 130, priority: 90, text: `next_move: ${state.nextMove}` },
+    { order: 135, priority: 88, text: `response_assessment: ${state.learnerResponseAssessment}` },
   ]
   if (state.priorKnowledge.length) {
-    optional.push({ order: 40, priority: 65, text: `prior_knowledge: ${safeList(state.priorKnowledge)}` })
+    // Keep compact orientation memory beside the current move after long
+    // evidence and multi-step source-study turns fill the transcript budget.
+    optional.push({
+      order: 40,
+      priority: 100,
+      text: `prior_knowledge: ${safeList(state.priorKnowledge, 48, 3)}`,
+    })
   }
   if (state.misconceptions.length) {
-    optional.push({ order: 60, priority: 80, text: `misconceptions: ${safeList(state.misconceptions)}` })
+    optional.push({
+      order: 60,
+      priority: 102,
+      text: `misconceptions: ${safeList(state.misconceptions, 48, 3)}`,
+    })
   }
+  if (state.currentMisconception !== null) {
+    optional.push({ order: 61, priority: 94, text: `current_misconception: ${safeQuoted(state.currentMisconception, 48)}` })
+  }
+  if (state.lastExplanationSummary !== null) {
+    optional.push({ order: 170, priority: 95, text: `last_explanation: ${safeQuoted(state.lastExplanationSummary, 48)}` })
+  }
+  if (state.lastQuestion !== null) {
+    optional.push({ order: 180, priority: 96, text: `last_question: ${safeQuoted(state.lastQuestion, 48)}` })
+  }
+  if (state.moveFingerprint !== null) {
+    optional.push({ order: 190, priority: 97, text: `move_fingerprint: ${safeQuoted(state.moveFingerprint, 64)}` })
+  }
+  state.failedMoves.slice(-2).forEach((item, index) => {
+    const representation = item.representation === undefined ? '' : `/${item.representation}`
+    optional.push({
+      order: 192 + index,
+      priority: 99 - index,
+      text: `failed_move: ${item.move}/${item.failureReason}${representation}: ${safeQuoted(item.summary, 36)}`,
+    })
+  })
   const recentEvidence = state.evidence.slice(-4)
   recentEvidence.forEach((item, index) => {
     const transferContext = item.kind === 'transfer' ? `/${item.transferContext}` : ''
@@ -1398,7 +1852,11 @@ export function renderLearnerStateTranscript(
     })
   })
   if (state.sourceAnchors.length) {
-    optional.push({ order: 300, priority: 60, text: `source_anchors: ${safeList(state.sourceAnchors)}` })
+    optional.push({
+      order: 300,
+      priority: 101,
+      text: `source_anchors: ${safeList(state.sourceAnchors, 56, 3)}`,
+    })
   }
   if (state.plan !== null) {
     // The route is projected as the objective plus the one current step, never

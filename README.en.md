@@ -2,117 +2,340 @@
 
 [中文](README.md)
 
-An independently installable DeepSeek Harness plugin that adds an explicitly selected Learning mode. It separates explanation from interaction: a native visual is an exploratory illustration inside an ordinary response, not a form that owns the learner's turn or replaces the normal composer.
+`@dsh-portable/interactive-learning` adds an explicit `learning` Agent preset to
+DeepSeek Harness. Standard, Code, Minimal, and Cordis keep their original tool
+schemas and prompts.
 
 ## Architecture
 
-- The package root provides the `learningActivities` Host broker and registers the required
-  `learning/state` session event; it registers no model-visible tools.
-- `./agent` is mounted only by `preset/learning` and exposes immediate `learning_visual`,
-  internal `learning_state_update`, and optional `learning_checkpoint` tools.
-- `./client` renders visuals and checkpoints inline; state updates have an explicitly empty view.
-- `./bootstrap` exports `registerInteractiveLearningSessionCompatibility` so the event type is
-  registered before persisted sessions are resumed.
-- V1/V2 activities and V3 visuals remain available only for read-only historical replay and are no
-  longer exposed by the current Learning preset.
+- The package root provides the `learningActivities` Host broker and registers
+  the `learning/state` session-event discriminator for strict validation. Import
+  the bootstrap before restoring persisted sessions; the package registers no
+  model-visible tools.
+- `./agent` is mounted only by the Learning preset. Its initial model-facing
+  catalog contains the compact `learning_visual_select`, silent
+  `learning_state_update`, and optional `learning_checkpoint_select` tools.
+  A selector exposes only the chosen visual/checkpoint payload schema for the
+  next model step. Its standing policy comes from one canonical TypeScript
+  source rather than being duplicated in the Skill.
+- The preset also keeps attachment continuation, Skill loading, and
+  `web_search`. Web search grounds current or contested-topic explanations in
+  sources without adding shell, editing, or automation tools to the preset.
+- `./client` renders visuals and optional checkpoints inline. State updates have
+  an explicitly empty tool view. V1/V2 activity calls and V3 visuals retain
+  read-only replay support.
+- `./protocol` owns the closed, versioned declarative contracts.
+- `preset/learning/skills/interactive-teaching` provides detailed teaching
+  judgment on demand.
+
+The ordinary conversation remains the default. A visual is an illustration
+inside a normal assistant response, not a form that owns the user turn. A
+reflective pause is the sole deliberate wait: the wire-compatible checkpoint
+tool is used only when the learner's response will change the next move, then
+terminates after one result.
+
+## Learn intent and first-turn route
+
+The Learning preset classifies the request before choosing a teaching route.
+Definitions, bare concept names, ELI5/beginner requests, persistent confusion or
+rustiness, prerequisites and learning paths, conceptual why/how questions, and
+requested quizzes, flashcards, or study guides are learn intent. Coding or
+debugging, direct calculation, personal troubleshooting, translation, news or
+fact lookups, resource recommendations, and opinion requests stay on their
+ordinary task route. Current or contested topics remain learn intent when the
+user asks for structured understanding and use Web search before substantive
+source-backed explanation. Bare concepts get one route-changing calibration
+question; definitions, clear confusions, and clear goals start the minimum
+useful explanation. Requested study resources are created directly.
+
+Once that learning segment is active, short answers, confusion, pressure, and
+follow-up questions inherit it instead of being reclassified as new requests.
+An explicit task/topic switch, reset, completion, or closing acknowledgement ends
+the segment and restores ordinary routing. After refresh or process resume, an
+unfinished persisted learner goal restores this inheritance even though the
+process-local route cache is empty.
 
 ## Non-blocking learning flow
 
-1. The assistant first explains the genuinely missing idea in ordinary prose.
-2. When a visual or manipulation materially improves understanding, it calls `learning_visual` once.
-3. While arguments are still streaming, the tool-call position names the visual being prepared instead of showing a generic wait.
-4. The closed protocol validates and immediately returns `visual-result@4`; it creates no pending question, submit button, or Reveal turn.
-   The result distinguishes `ready` from `unavailable`: a composition without the Learning Client renders nothing, so the assistant carries the same explanation in prose and never points at a figure the learner cannot see. An unrendered visual is also not recorded as a teaching move that happened.
-5. The visual renders at the tool call and remains interactive on refresh and historical replay.
-6. The assistant continues with the interpretation and can ask one natural question through ordinary conversation.
+1. A short, underspecified `learn X`/`teach me X` request gets one calibration
+   question whose answer changes the route. An explicit beginner/from-zero
+   request starts with one minimum concept immediately; an explicit complete
+   overview or current/contested survey can go directly to exposition.
+2. The assistant explains the missing idea in ordinary prose. When manipulation
+   is genuinely useful, it first calls `learning_visual_select` with one native
+   kind and purpose.
+3. The selected kind-specific `learning_visual` schema is exposed for the next
+   model step and carries the selected purpose and learner action/question; no
+   eight-kind visual catalog is injected into the initial
+   context. While arguments are streaming, the tool call's place names the
+   visual being prepared instead of showing a generic wait.
+4. Validation returns `visual-result@4` immediately. No lesson token, pending
+   question, submit button, reveal call, or five-minute user wait is created.
+   The result distinguishes `ready` from `unavailable`: a composition without
+   the Learning Client renders nothing, so the assistant carries the same
+   explanation in prose and never points at a figure the learner cannot see.
+   An unrendered visual is also not recorded as a teaching move that happened.
+5. The chart renders in the tool call's place and remains interactive after the
+   completed call is replayed.
+6. The assistant continues with the interpretation and, if useful, one natural
+   question. The learner answers through the normal composer on the next turn.
 
-The old `learning_activity`, `learning_question`, and `learning_reveal` tools remain only as read-only V1/V2 replay support. V3 parameter charts are likewise replay-only and are no longer exposed by the Learning preset.
+This removes the old Question → Reveal split that duplicated rounds and left a
+model turn running while it waited for the learner. The surrounding prose must
+still make sense if a Client cannot render the enhancement.
 
-## Session-scoped LearnerState
+## Session-scoped learner state
 
-Learning stores only a small, tentative teaching state for the current session: the current goal,
-shown prerequisites, misconceptions or gaps, scaffolding needs, evaluation context, and evidence of
-independent completion or transfer. It is not a cross-session profile, personality model, or long-term mastery record.
+Learning keeps a small, tentative teaching state for the current session only:
+the learner's immediate goal, demonstrated prior knowledge, current gap or
+misconception, phase, last explanation/question, learner-response assessment,
+next move, move fingerprint, learner-evidence-derived support need, urgency or
+stuck evidence, assessment context, bounded failed-move history with its
+representation and reason, and independently demonstrated evidence including
+fresh transfer.
 
-Updates must come from concrete observable evidence and are not mechanical per-turn bookkeeping. Each
-accepted update appends an identity-free full `learning/state` snapshot; later model steps fold the
-durable events and render a bounded 100–300-token dynamic context. Refresh/resume folds the same event
-log, fork diverges under a new identity, and reset advances the revision so stale asynchronous results
-cannot resurrect old state.
+The production path is explicit and auditable:
 
-The public root export includes LearnerState types, folding, reset, serialization, and session-event registration APIs:
+1. The ordinary learner message remains in the normal conversation transcript.
+   When a concrete observation materially changes teaching, the model may call
+   the internal `learning_state_update`; it must not call it mechanically.
+2. A completed visual and a checkpoint terminal result contribute only facts the
+   Host can observe deterministically. Submission alone records an unevaluated
+   learner action; it never implies correctness, independence, progress, or
+   mastery.
+3. Every accepted update appends a strict, identity-free full snapshot as the
+   `learning/state` session event. The Host must import the bootstrap before
+   restoring a session so the event type is registered; refresh and resume then
+   fold and validate the snapshot normally.
+4. Before every subsequent model step, the dynamic prompt context folds the
+   durable events and renders a bounded 100–300-token tentative summary.
 
-```ts
-import {
-  createInitialLearnerState,
-  foldLearnerStateSession,
-  serializeLearnerStateSnapshot,
-} from '@dsh-portable/interactive-learning'
-```
-
-The teaching move is routed by the failure the learner actually shows rather than by the most interesting explanation: a concept gap needs the idea itself rather than recipe steps; a procedure gap needs a genuinely distinct parallel worked example rather than a conceptual overview; a notation gap needs the symbols, terms, and conventions decoded rather than a re-derivation; a task-model gap needs the question restated plainly before any method; a prerequisite gap needs the missing rule supplied first. Answering a gap the learner does not have reads as not listening, however correct the content is.
+Persisted snapshots do not contain a session id. Refresh and resume fold the
+same event log; a fork rebinds inherited snapshots to its new identity and then
+diverges independently. Reset appends a cleared snapshot and advances the
+revision, so a late asynchronous update cannot resurrect prior state. Disposal
+drops only the process-local fold cache. This is not a cross-session learner
+ profile, personality model, learning-style classifier, or long-term mastery
+ record. A mastery claim in an ordinary message is not promoted automatically;
+ when the learner explicitly corrects this tentative state, however, `correct`
+ honors the mastery override and retains its user-correction provenance.
+ Low-confidence evidence remains useful for choosing support but cannot promote
+ mastery automatically. A medium-or-higher-confidence, correct, independent explanation or complete attempt may
+ end the current teaching segment while mastery remains `emerging`; automatic
+ inference promotes `transfer` only from explicit fresh-context evidence. If the learner
+ simply wants to stop being quizzed, mark `phase` and `nextMove` as `complete`
+ in the correction without fabricating transfer evidence.
 
 ## Session-scoped learning route
 
-Most learning segments need no route at all: a single concept, a direct answer, or a short correction is complete without one. A route is recorded only when the goal genuinely spans several dependent moves — a multi-section source, a procedure with real prerequisites, or a multi-part objective the learner stated.
+Most learning segments need no route at all: a single concept, a direct answer,
+or a short correction is complete without one. A route is recorded only when the
+goal genuinely spans several dependent moves — a multi-section source, a
+procedure with real prerequisites, or a multi-part objective the learner stated.
 
-The route lives in LearnerState for the current session and is a revisable hypothesis rather than a contract:
+The route lives in the learner state for the current session and is a revisable
+hypothesis rather than a contract:
 
-- At most 6 steps, with `pending`, `active`, and `evidenced` as the only statuses, and never more than one `active`.
-- A step advances only on evidence the learner produced, never because the material was covered.
-- Revising a route preserves whatever was already `evidenced` under the same step id, so demonstrated progress is never erased.
-- The model context carries the objective and the current step only, never the whole list, so the route cannot be read back as a checklist to march through.
-- Demonstrated transfer ends the segment however many steps remain; an unfinished route is never a reason to continue.
+- At most 6 steps, with `pending`, `active`, and `evidenced` as the only
+  statuses, and never more than one `active`.
+- A step advances only on evidence the learner produced, never because the
+  material was covered.
+- Revising a route preserves whatever was already `evidenced` under the same
+  step id, so demonstrated progress is never erased.
+- The model context carries the objective and the current step only, never the
+  whole list, so the route cannot be read back as a checklist to march through.
+- Demonstrated transfer, or a medium-or-higher-confidence complete explanation/attempt,
+  ends the segment however many steps remain; an unfinished route is never a
+  reason to continue.
 - A learning-boundary reset clears the route with the rest of the state.
 
-## Optional checkpoint protocol v1
+## Optional reflective pause (wire-compatible checkpoint protocol v1)
 
-`dsh-learning/checkpoint@1` is reserved for a prediction, explanation, contrast, design choice,
-debugging diagnosis, boundary case, or transfer application that will materially change the next
-teaching move. It is not a per-turn Continue ceremony.
+`dsh-learning/checkpoint@1` is reserved for a prediction, explanation, contrast,
+design choice, debugging diagnosis, boundary case, or transfer application that
+will materially change the next teaching move. It is not the default input path
+and must never become a per-turn Continue ceremony.
 
-- At most one checkpoint may be pending in a session and at most one distinct checkpoint may be emitted in a model step.
-- The five closed kinds are `free_text`, `single_choice`, `numeric`, `prediction`, and `code_slot`; single-choice results use stable option ids.
-- The card header names the cognitive move being requested (predict, explain, contrast, transfer, or attempt) rather than an internal label such as "checkpoint".
-- Payloads contain only the current prompt, context, expected evidence, answer-free options, and a self-sufficient fallback.
-- Terminal statuses are `submitted`, `skipped`, and `cancelled`; call and receipt replays are idempotent, while conflicting reuse fails closed.
-- Skip, cancel, timeout, renderer failure, or an unavailable rich Client restores ordinary conversation without Reveal, animation, Continue, or a second wait.
+- At most one checkpoint may be pending in a session and at most one distinct
+  checkpoint may be emitted in a model step.
+- Its five closed kinds are `free_text`, `single_choice`, `numeric`,
+  `prediction`, and `code_slot`. Single-choice results carry the stable option
+  id; labels are presentation only.
+- The card header names the cognitive move being requested — predict, explain,
+  contrast, transfer, or attempt — rather than an internal label such as
+  "checkpoint", which the standing policy forbids for ordinary turns.
+- The pending payload may contain only the current prompt, context, expected
+  evidence, answer-free options, and a self-sufficient fallback. Correct
+  answers, grading rubrics, solutions, and future steps are rejected.
+- The terminal statuses remain `submitted`, `skipped`, and `cancelled`. New
+  non-submitted results also state whether the learner acted or the Client,
+  timeout, Host, or provider made the checkpoint unavailable; old v1 receipts
+  without that reason remain readable.
+  Refresh recovers the same wait and draft; call and receipt replays are
+  idempotent, while conflicting reuse fails closed.
+- Skip, cancel, timeout, renderer failure, or an unavailable rich Client restores
+  ordinary conversation without a Reveal, animation, Continue, or second wait.
 
-## Semantic Visual Protocol v4
+## Semantic visual protocol v4
 
-`dsh-learning/visual@4` routes concepts to eight trusted native renderer families:
+`dsh-learning/visual@4` selects a trusted native renderer by concept semantics:
 
-- `plot` for functions, data, probability, points, lines, bars, and quantitative relationships;
+- `plot` for functions, data, probability, bars, and quantitative relationships;
 - `node_link` for neural-network layers, trees, processes, causality, and topology;
 - `scene_2d` for geometry, vectors, forces, and annotated spatial schematics;
-- `relation` for comparisons, matrices, classification, and set membership;
+- `relation` for comparisons, matrices, classifications, and set membership;
 - `timeline` for historical events, discoveries, phases, and eras;
 - `formula_steps` for derivations, algebraic transformations, and proof chains;
 - `study_map` for anchored sections, prerequisites, and concept roles in reference material;
-- `recall_deck` for hinted active-recall cards with local review state.
+- `recall_deck` for hinted active-recall cards. Reveal and mastered/review
+  actions keep local replay state and, when the Host bridge is available, are
+  recorded as unverified session-scoped learner observations.
+  Resetting the deck clears only the local badges; it does not erase Host
+  observations;
+- `data_table` for typed records with sorting, filtering, selection, outlier marks, and a linked chart;
+- `state_transition` for event-driven state changes with guards and actions;
+- `sequence_buffer` for discrete slots, pointers, ranges, and step snapshots;
+- `sequence_diagram` for ordered sync, async, and return messages between participants;
+- `code_trace` for declarative replay of code lines, variables, call stacks, loops, and output;
+- `field_2d` for scalar heatmaps, contours, and vector fields;
+- `causal_loop` for signed, delayed reinforcing and balancing feedback loops.
 
-Every family can include a sequence that focuses only declared objects. Renderers provide a visible title, keyboard operation, responsive layouts, structured text alternatives, and a local error boundary. Interactions include bounded sliders, plot probes, series toggles, node and edge selection, progressive focus, and local review state.
+Any kind can add local sequence frames that progressively focus declared ids.
+The controls remain exploratory and never replace the ordinary conversation
+composer. Renderers provide a visible title, keyboard-accessible inspection,
+responsive layouts, structured text alternatives, and a local error boundary.
+`state_transition`, `sequence_buffer`, and `code_trace` can also carry compact
+kind-specific snapshots so states, pointers, variables, and stack frames really
+change from one step to the next.
 
-A request to recall a derivative formula is answered with the formula instead of an arbitrary exponent slider. A requested fully connected neural network is rendered with layers, nodes, and every real edge instead of a sigmoid plot or Markdown art.
+Plot content supports optional bounded sliders, static points, polylines, bars,
+computed curves, stable axes, and parameter-derived metrics. A slider is omitted
+when manipulation is not the lesson. In particular, formula recall is answered
+directly; a requested network structure is rendered as nodes and explicit edges
+instead of being substituted with a curve or Markdown art.
 
-When a learner supplies a document, PDF, handout, or several sources, the system preserves observed section and page/title anchors, uses `study_map` for an overview when useful, then routes each concept to a more specific visual. It does not flatten a source into one mega-graph or mechanically turn every attachment into flashcards.
+When the learner supplies a document, PDF, slide deck, or several sources, the
+system preserves observed section and page/title anchors, uses `study_map` for a
+navigable overview when useful, and then routes each concept to its more specific
+renderer. It does not flatten a whole source into one mega-graph or mechanically
+turn every attachment into flashcards.
 
-A payload the schema accepts always reaches its renderer; it never degrades into Markdown, the description text, or an error box. When a series has no value inside the declared axes — `log` or `sqrt` over a negative domain, or a curve that sits entirely outside the y range — the chart still draws, states "No values fall inside the current axes" in the empty area, and marks that series in the legend, rather than leaving the learner with a frame that looks broken.
+Curves use a closed recursive mathematical AST. Supported leaves are
+`constant` and `variable`; binary operators are `add`, `sub`, `mul`, `div`,
+`pow`, `min`, and `max`; unary operators include trigonometric (`sin`, `cos`,
+`tan`, `atan`), activation (`relu`, `leaky_relu`, `step`, and numerically stable
+`sigmoid`), probability (`normpdf`), and basic (`neg`, `abs`, `sqrt`, `exp`,
+`log`, `floor`, `ceil`) functions. Curve variables are `x` plus declared
+parameter ids. `leaky_relu` uses a 0.01 negative slope, `step` switches at zero,
+and `normpdf` is the standard normal density; other normal distributions can be
+composed with arithmetic nodes. Metrics may use declared parameters but not `x`.
 
-All model-visible payloads use closed schemas. Curves accept only a bounded mathematical AST. Unknown fields, undeclared variables, non-finite values, invalid references, cyclic prerequisites, excessive payloads, and invalid ranges are rejected. Model-provided HTML, SVG, Markdown diagrams, and JavaScript never execute.
+The model schema and runtime parser share the same expression-depth limit.
+Unknown fields, undeclared variables, non-finite values, excessive payloads,
+invalid references, and invalid ranges are rejected. Model-provided HTML,
+Markdown diagrams, SVG markup, and JavaScript are never executed.
+
+A payload the schema accepts always reaches its renderer; it never degrades
+into Markdown, the description text, or an error box. When a series has no value
+inside the declared axes — `log` or `sqrt` over a negative domain, or a curve
+that sits entirely outside the y range — the chart still draws, states that no
+values fall inside the current axes, and marks that series in the legend, rather
+than leaving the learner with a frame that looks broken.
+
+V3 parameter charts and V1/V2 activities remain parseable only for historical
+replay. Their model tools are no
+longer exposed by the Learning preset. A failed historical result is shown as
+an explicit error/fallback instead of a disabled “completed” activity.
 
 ## Design system and accessibility
 
-Every learning surface shares one set of design tokens, declared on `[data-learning-scope]` in `src/client/tokens.module.css`. The two CSS Modules compile into separate `<style>` tags and cannot share styles through classes, so the shared values are inherited as custom properties instead; a root component opts its subtree in by spreading `learningScope`.
+Every learning surface shares one set of design tokens, declared on
+`[data-learning-scope]` in `src/client/tokens.module.css`. The two CSS Modules
+compile into separate `<style>` tags and cannot share styles through classes, so
+the shared values are inherited as custom properties instead; a root component
+opts its subtree in by spreading `learningScope`.
 
-The tokens cover the type ramp, spacing scale, radii, elevation, control metrics and motion durations, plus the single accent, semantic palette and focus ring. Neither stylesheet now contains a raw font size, a raw radius, or a directly referenced Host alias. Every Host alias carries a fallback inside the token layer, so a theme that omits one degrades to a usable colour rather than an invalid declaration.
+The tokens cover the type ramp, spacing scale, radii, elevation, control metrics
+and motion durations, plus the single accent, semantic palette and focus ring.
+Neither stylesheet now contains a raw font size, a raw radius, or a directly
+referenced Host alias. Every Host alias carries a fallback, so a theme that omits
+one degrades to a usable colour rather than an invalid declaration.
 
 The renderers are built for keyboards and assistive technology:
 
-- One figure is one tab stop. A `node_link` visual may declare 48 nodes and 160 edges and a `scene_2d` up to 64 elements; once inside a figure, ← → move between items, Home and End jump to the ends, and Enter or Space selects one.
-- Plot probe readings are written to an `aria-live` region, so keyboard probing is announced; Escape clears it.
-- A figure's accessible name is a short summary. The full structured text alternative lives in readable content, so it can be browsed item by item instead of spoken as one long name.
-- The focus ring, motion durations and reduced-motion behaviour all come from the token layer.
+- One figure is one tab stop. A `node_link` visual may declare 48 nodes and 160
+  edges and a `scene_2d` up to 64 elements; once inside a figure, the arrow keys
+  move between items, Home and End jump to the ends, and Enter or Space selects.
+- Plot probe readings are written to an `aria-live` region, so keyboard probing
+  is announced; Escape clears it.
+- A figure's accessible name is a short summary. The full structured text
+  alternative lives in readable content, so it can be browsed item by item
+  instead of spoken as one long name.
+- The focus ring, motion durations and reduced-motion behaviour all come from
+  the token layer.
+
+## Development and verification
+
+The real desktop/web runtime reads package exports from `lib`, so rebuild and
+fully restart after source changes:
+
+```powershell
+pnpm install
+pnpm run build
+pnpm test
+pnpm run check
+pnpm run test:package:purity
+pnpm run test:package
+pnpm run pack:check
+git diff --check
+```
+
+The browser fixture imports source components directly and is useful for rapid
+visual inspection:
+
+```powershell
+pnpm exec vite --config tests/browser/vite.config.mjs
+```
+
+Open `http://127.0.0.1:41739/`. It covers visual replay plus checkpoint submit,
+skip, cancel, refresh-draft, and session-isolation states. This is a component
+harness, not a substitute for the packaged desktop smoke; its separate fixture
+input does not prove the real Host composer lifecycle.
+
+The credential-free teaching evaluation contains hand-written rubric fixtures.
+It checks the grader and protocol invariants; it is not evidence that a model
+actually teaches well:
+
+```powershell
+pnpm run eval
+```
+
+The retired V2 Question → Reveal → animation → Continue sequence is available
+only through the explicitly named `gradeLegacyV2ReplayTranscript` read-only
+replay audit. It is not called by the default V4.1 eval and is not a current
+teaching success criterion.
+
+`tests/model-canary.mts` is a separately labelled, optional two-turn real-model
+canary. It checks calibration for an underspecified learning request, immediate
+minimum teaching after the learner gives level and goal, and the lazy
+selector → kind-specific visual schema → ordinary-text continuation path. It
+is still not a statistical teaching-quality benchmark and requires
+`DSH_CANARY_API_KEY`. Any real-model report must retain its provenance and must
+not be merged with fixture results.
+
+Package-level verification builds the package, scans published JS/maps for
+checkout or drive-letter paths, creates a real tarball, installs it into a clean
+temporary consumer, resolves Host/Agent/Client exports, and exercises the
+managed preset lifecycle:
+
+```powershell
+pnpm run test:package:purity
+pnpm run test:package
+```
+
+The installable `lib/` artifacts are committed, so rebuild and fully restart the
+application after source changes. Release verification should also run the normal
+Windows package pipeline (without `--skip-build`).
 
 ## Install
 
@@ -129,17 +352,20 @@ Install the Learning preset:
 & "$env:USERPROFILE\.dsh\profiles\web\node_modules\.bin\dsh-learning-preset.cmd" install
 ```
 
-Before constructing the Loader, agent loop, or restoring any configured session, import the bootstrap:
+Before constructing the Loader, agent loop, or restoring any configured session,
+import the bootstrap:
 
 ```ts
 import '@dsh-portable/interactive-learning/bootstrap'
 ```
 
-Restart DeepSeek Harness and select Learning mode in a new session. If `DSH_HOME` is set, use its `profiles\web\node_modules\.bin` directory instead.
+Restart DeepSeek Harness and select Learning mode in a new session. If `DSH_HOME`
+is set, use its `profiles\web\node_modules\.bin` directory instead.
 
 ## Update and uninstall
 
-After updating the plugin, run the preset installer again. It preserves preset files that you changed yourself.
+After updating the plugin, run the preset installer again. It preserves preset
+files that you changed yourself.
 
 To uninstall, switch active sessions to another mode, then run:
 
@@ -150,38 +376,17 @@ dsh plugin --profile web remove @dsh-portable/interactive-learning
 
 Restart DeepSeek Harness afterward.
 
-## Development
+## Compatibility
 
-The installable `lib/` artifacts are committed. For source changes, use Node.js 22+ and pnpm:
+The standalone package targets the current DeepSeek Harness kernel
+`0.1.0-rc.7`, using the same release family as the portable integration. Its
+Host composition, Client bundler, and `cordis.patch.yml` remain adapted to the
+standalone package layout.
 
-```powershell
-pnpm install
-pnpm run build
-pnpm test
-pnpm run check
-pnpm run test:package:purity
-pnpm run test:package
-pnpm run pack:check
-git diff --check
-```
-
-`pnpm run check` also runs the credential-free deterministic teaching evaluation. The real desktop/web runtime reads package exports from `lib`, so rebuild and fully restart after source changes.
-
-The browser component fixture can be started from the repository root with:
-
-```powershell
-pnpm exec vite --config tests/browser/vite.config.mjs
-```
-
-Run the offline evaluation alone with:
-
-```powershell
-pnpm run eval
-```
-
-Package tests check declaration closure, absolute-path purity, tarball installation, public exports, and preset install/upgrade/uninstall lifecycle.
-
-The standalone package targets the current DeepSeek Harness kernel `0.1.0-rc.7`, using the same release family as the portable integration. Its Host composition, Client bundler, and `cordis.patch.yml` remain adapted to the standalone package layout.
+Deferred by design: arbitrary executable widgets, cross-session mastery,
+spaced repetition, knowledge graphs, LMS adapters, and silent collection of
+slider state. If exact parameter values matter, the learner should describe or
+quote them in the normal reply.
 
 ## License
 

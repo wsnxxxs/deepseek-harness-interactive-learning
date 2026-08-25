@@ -65,6 +65,7 @@ describe('LearnerState reducer', () => {
       supportLevel: 0,
       assessmentContext: 'unknown',
       mastery: 'unseen',
+      masteryBasis: 'evidence',
       evidence: [],
       lastMove: 'none',
       sourceAnchors: [],
@@ -74,6 +75,108 @@ describe('LearnerState reducer', () => {
     expect(state).not.toHaveProperty('personality')
     expect(state).not.toHaveProperty('learningStyle')
     expect(state).not.toHaveProperty('persistentProfile')
+  })
+
+  it('remembers the last teaching move and routes repair without repeating its fingerprint', () => {
+    const explained = reduceLearnerState(createInitialLearnerState('session-memory'), {
+      type: 'assistant_move_observed',
+      move: 'explanation',
+      explanationSummary: 'Decoded the index/value distinction with one queue example.',
+      question: 'Which value does the index name after the dequeue?',
+      learnerResponseAssessment: 'no-evidence',
+      nextMove: 'question',
+      moveFingerprint: 'index-value:queue-example:v1',
+      observation: observation('move-explanation', 'assistant-output'),
+    })
+    expect(explained).toMatchObject({
+      phase: 'teach',
+      lastExplanationSummary: 'Decoded the index/value distinction with one queue example.',
+      lastQuestion: 'Which value does the index name after the dequeue?',
+      learnerResponseAssessment: 'no-evidence',
+      nextMove: 'question',
+      moveFingerprint: 'index-value:queue-example:v1',
+    })
+
+    const partial = reduceLearnerState(explained, {
+      type: 'assistant_move_observed',
+      move: 'question',
+      learnerResponseAssessment: 'partial',
+      currentMisconception: 'Confuses the position with the stored value.',
+      nextMove: 'repair',
+      moveFingerprint: 'index-value:check:v1',
+      observation: observation('move-question', 'assistant-output', 'Asked for evidence.'),
+    })
+    expect(partial).toMatchObject({
+      phase: 'practice',
+      learnerResponseAssessment: 'partial',
+      currentMisconception: 'Confuses the position with the stored value.',
+      nextMove: 'repair',
+      moveFingerprint: 'index-value:check:v1',
+    })
+    const transcript = renderLearnerStateTranscript(partial)
+    expect(transcript).toContain('last_explanation:')
+    expect(transcript).toContain('last_question:')
+    expect(transcript).toContain('current_misconception:')
+    expect(transcript).toContain('move_fingerprint:')
+
+    expect(() => reduceLearnerState(partial, {
+      type: 'assistant_move_observed',
+      move: 'repair',
+      moveFingerprint: 'index-value:check:v1',
+      observation: observation('move-repeated', 'assistant-output', 'Repeated the same check.'),
+    })).toThrow(/moveFingerprint must change/)
+  })
+
+  it('marks an independently demonstrated fresh transfer as complete', () => {
+    const complete = reduceLearnerState(createInitialLearnerState('session-complete'), {
+      type: 'learner_evidence_observed',
+      evidence: {
+        kind: 'transfer',
+        transferContext: 'fresh',
+        summary: 'Applied the invariant to a linked-list traversal.',
+        confidence: 'high',
+        correctness: 'correct',
+        independence: 'independent',
+      },
+      observation: observation('fresh-transfer'),
+    })
+    expect(complete).toMatchObject({
+      mastery: 'transfer',
+      phase: 'complete',
+      nextMove: 'complete',
+      learnerResponseAssessment: 'correct',
+    })
+  })
+
+  it('ends a segment after a complete medium-confidence explanation without claiming transfer', () => {
+    const complete = reduceLearnerState(createInitialLearnerState('session-explanation-complete'), {
+      type: 'learner_evidence_observed',
+      evidence: {
+        kind: 'explanation',
+        summary: 'Explained the invariant and applied every branch of the implementation.',
+        confidence: 'medium',
+        correctness: 'correct',
+        independence: 'independent',
+      },
+      observation: observation('complete-explanation'),
+    })
+    expect(complete).toMatchObject({
+      mastery: 'emerging',
+      phase: 'complete',
+      nextMove: 'complete',
+    })
+  })
+
+  it('allows an explicit stop correction without fabricating transfer mastery', () => {
+    const stopped = reduceLearnerState(createInitialLearnerState('session-stop-correction'), {
+      type: 'state_corrected',
+      correction: { phase: 'complete' },
+      observation: {
+        ...observation('stop-correction', 'user-correction', 'I understand this and do not want another quiz.'),
+        source: 'user-correction',
+      },
+    })
+    expect(stopped).toMatchObject({ mastery: 'unseen', phase: 'complete', nextMove: 'complete' })
   })
 
   it('updates every teaching hypothesis only through explicit observable events', () => {
@@ -237,7 +340,50 @@ describe('LearnerState reducer', () => {
     expect(state.evidence.at(-1)?.kind).toBe('transfer')
   })
 
-  it('does not promote mastery from guided, unevaluated, self-claimed, or merely submitted work', () => {
+  it('keeps low-confidence correctness tentative, including fresh transfer', () => {
+    let state = reduceLearnerState(createInitialLearnerState('session-low-confidence'), {
+      type: 'learner_evidence_observed',
+      evidence: {
+        kind: 'explanation',
+        summary: 'A low-confidence correct explanation',
+        confidence: 'low',
+        correctness: 'correct',
+        independence: 'independent',
+      },
+      observation: observation('low-confidence-explanation'),
+    })
+    expect(state.mastery).toBe('unseen')
+
+    state = reduceLearnerState(state, {
+      type: 'learner_evidence_observed',
+      evidence: {
+        kind: 'transfer',
+        transferContext: 'fresh',
+        summary: 'A low-confidence fresh transfer',
+        confidence: 'low',
+        correctness: 'correct',
+        independence: 'independent',
+      },
+      observation: observation('low-confidence-transfer', 'learner-action'),
+    })
+    expect(state.mastery).toBe('unseen')
+
+    state = reduceLearnerState(state, {
+      type: 'learner_evidence_observed',
+      evidence: {
+        kind: 'transfer',
+        transferContext: 'fresh',
+        summary: 'A sufficiently confident fresh transfer',
+        confidence: 'medium',
+        correctness: 'correct',
+        independence: 'independent',
+      },
+      observation: observation('medium-confidence-transfer', 'learner-action'),
+    })
+    expect(state.mastery).toBe('transfer')
+  })
+
+  it('keeps automatic mastery evidence-based but accepts an explicit user correction', () => {
     let state = createInitialLearnerState('session-a')
     const unqualified = [
       {
@@ -284,14 +430,22 @@ describe('LearnerState reducer', () => {
       },
     })).toThrow(/requires source learner-message or learner-action/)
 
-    expect(() => reduceLearnerState(state, {
+    const corrected = reduceLearnerState(state, {
       type: 'state_corrected',
       correction: { mastery: 'transfer' },
       observation: {
         ...observation('self-upgrade', 'user-correction', 'I think I have mastered it'),
         source: 'user-correction',
       },
-    })).toThrow(/cannot upgrade mastery/)
+    })
+    expect(corrected).toMatchObject({
+      mastery: 'transfer',
+      masteryBasis: 'user-correction',
+      phase: 'complete',
+      nextMove: 'complete',
+    })
+    expect(corrected.evidence).toHaveLength(state.evidence.length)
+    expect(renderLearnerStateTranscript(corrected)).toContain('mastery_basis: user-correction')
   })
 
   it('derives support deterministically from observable difficulty evidence', () => {
@@ -339,6 +493,51 @@ describe('LearnerState reducer', () => {
     })
     expect(state.lastMove).toBe('checkpoint')
     expect(state.supportLevel).toBe(5)
+  })
+
+  it('preserves partial learner evidence without treating it as mastery or failure', () => {
+    const state = reduceLearnerState(createInitialLearnerState('session-partial'), {
+      type: 'learner_evidence_observed',
+      evidence: {
+        kind: 'explanation',
+        summary: 'Explained the direction but omitted the role of the intercept',
+        correctness: 'partial',
+        independence: 'independent',
+      },
+      observation: observation('partial-explanation', 'learner-message'),
+    })
+
+    expect(state.evidence[0]).toMatchObject({ correctness: 'partial' })
+    expect(state.learnerResponseAssessment).toBe('partial')
+    expect(state.mastery).toBe('unseen')
+    expect(state.phase).toBe('practice')
+    expect(state.nextMove).toBe('guided_discovery')
+  })
+
+  it('records why a representation failed so repair can choose a different move', () => {
+    const state = reduceLearnerState(createInitialLearnerState('session-failed-move'), {
+      type: 'failed_move_observed',
+      failedMove: {
+        move: 'guided_discovery',
+        fingerprint: 'sign-question-v1',
+        failureReason: 'unhelpful-hint',
+        representation: 'sign question',
+        summary: 'The learner said the hint still did not show which quantity changes.',
+      },
+      observation: observation('failed-sign-question', 'learner-message'),
+    })
+
+    expect(state.failedMoves).toEqual([expect.objectContaining({
+      move: 'guided_discovery',
+      fingerprint: 'sign-question-v1',
+      failureReason: 'unhelpful-hint',
+      representation: 'sign question',
+    })])
+    expect(state.phase).toBe('repair')
+    expect(state.nextMove).toBe('repair')
+    expect(renderLearnerStateTranscript(state)).toContain('failed_move: guided_discovery/unhelpful-hint/sign question')
+    expect(parseLearnerStateSnapshot(serializeLearnerStateSnapshot(state), 'session-failed-move'))
+      .toEqual(state)
   })
 
   it('recovers support need stepwise and clears it only on fresh independent transfer', () => {
@@ -692,6 +891,29 @@ describe('lossless session-event snapshots', () => {
     expect(hydrateLearnerStateSnapshot(encoded, 'session-b')).toEqual({ ...state, sessionId: 'session-b' })
   })
 
+  it('hydrates pre-memory snapshots with conservative teaching defaults', () => {
+    const snapshot = JSON.parse(serializeLearnerStateSnapshot(createInitialLearnerState('session-a'))) as Record<string, unknown>
+    for (const key of [
+      'phase',
+      'lastExplanationSummary',
+      'lastQuestion',
+      'learnerResponseAssessment',
+      'currentMisconception',
+      'nextMove',
+      'moveFingerprint',
+    ]) delete snapshot[key]
+
+    expect(parseLearnerStateSnapshot(snapshot, 'session-a')).toMatchObject({
+      phase: 'orient',
+      lastExplanationSummary: null,
+      lastQuestion: null,
+      learnerResponseAssessment: 'no-evidence',
+      currentMisconception: null,
+      nextMove: 'calibrate',
+      moveFingerprint: null,
+    })
+  })
+
   it('strictly rejects unknown profile/style fields and malformed nested evidence', () => {
     const state = createInitialLearnerState('session-a')
     const snapshot = JSON.parse(serializeLearnerStateSnapshot(state)) as Record<string, unknown>
@@ -733,19 +955,15 @@ describe('lossless session-event snapshots', () => {
       mastery: 'transfer',
       evidence: [],
     }, 'session-a')).toThrow(/requires correct, independent learner transfer evidence/)
-    expect(() => parseLearnerStateSnapshot({
+    expect(parseLearnerStateSnapshot({
       ...snapshot,
       mastery: 'transfer',
-      evidence: [{
-        kind: 'transfer',
-        summary: 'I changed the panel to mastered',
-        confidence: 'high',
-        correctness: 'correct',
-        independence: 'independent',
-        transferContext: 'fresh',
-        source: 'user-correction',
-      }],
-    }, 'session-a')).toThrow(/requires correct, independent learner transfer evidence/)
+      masteryBasis: 'user-correction',
+      evidence: [],
+    }, 'session-a')).toMatchObject({
+      mastery: 'transfer',
+      masteryBasis: 'user-correction',
+    })
     expect(() => parseLearnerStateSnapshot({
       ...snapshot,
       mastery: 'transfer',
@@ -1024,12 +1242,16 @@ describe('compact V4.1 learner-state transcript', () => {
       prior_knowledge: [\"array traversal\", \"loop invariants\"]
       gap: notation
       misconceptions: [\"treats the index as the stored value\"]
+      current_misconception: \"treats the index as the stored value\"
       readiness: can-reason
       progress_signal: stuck
       urgency: later-pressure
       support_need: 3/5
       assessment_context: self-study
       mastery: emerging
+      phase: practice
+      next_move: complete
+      response_assessment: correct
       evidence: error/incorrect/independent/high: \"Confused i with values[i]\"
       evidence: explanation/correct/independent/medium: \"Correctly identified the loop invariant\"
       source_anchors: [\"chapter-2#indices\"]
@@ -1064,6 +1286,63 @@ describe('compact V4.1 learner-state transcript', () => {
       expect(transcript).not.toContain('last_move')
       expect(transcript).not.toContain('repeated_hint')
     }
+  })
+
+  it('keeps compact prior knowledge, misconceptions, and source anchors under transcript pressure', () => {
+    let state = apply(
+      createInitialLearnerState('session-memory-budget'),
+      {
+        type: 'prior_knowledge_observed',
+        items: [
+          'arrays and indexed lookup',
+          'queue insertion order',
+          'the learner already knows invariants',
+        ],
+        observation: observation('memory-prior'),
+      },
+      {
+        type: 'gap_observed',
+        gap: 'concept',
+        misconceptions: [
+          'confuses the front with the most recently added item',
+          'treats enqueue and dequeue as the same operation',
+        ],
+        observation: observation('memory-misconception'),
+      },
+      {
+        type: 'source_anchors_observed',
+        anchors: [
+          'chapter 2, section 1, queue invariant',
+          'chapter 3, worked example, FIFO trace',
+        ],
+        observation: observation('memory-source', 'source-material'),
+      },
+      {
+        type: 'assistant_move_observed',
+        move: 'question',
+        question: 'Which item is at the front after enqueueing C?',
+        observation: observation('memory-question', 'assistant-output'),
+      },
+    )
+
+    for (let index = 0; index < MAX_LEARNER_EVIDENCE; index += 1) {
+      state = reduceLearnerState(state, {
+        type: 'learner_evidence_observed',
+        evidence: {
+          kind: 'explanation',
+          summary: `${'The learner supplied a long but low-value transcript fragment. '.repeat(8)}${index}`,
+          correctness: 'unknown',
+          independence: 'unknown',
+        },
+        observation: observation(`memory-evidence-${index}`),
+      })
+    }
+
+    const transcript = renderLearnerStateTranscript(state, { maxTokens: 300 })
+    expect(transcript).toContain('prior_knowledge:')
+    expect(transcript).toContain('misconceptions:')
+    expect(transcript).toContain('source_anchors:')
+    expect(estimateLearnerStateTokens(transcript)).toBeLessThanOrEqual(300)
   })
 
   it('escapes state-envelope markup and stays within the requested token budget', () => {

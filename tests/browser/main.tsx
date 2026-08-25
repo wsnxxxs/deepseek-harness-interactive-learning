@@ -23,6 +23,7 @@ import {
 } from '../../src/protocol.ts'
 import { encodeLearningCheckpointDetail, learningCheckpointQuestionId } from '../../src/transport.ts'
 import { compareActivity, parameterActivity, processActivity, visualV4Catalog } from '../fixtures.ts'
+import { DECISION_TREE_VISUAL } from '../visual-corpus.ts'
 import './page.css'
 
 const SESSION_ID = 'learning-browser-visual-gallery'
@@ -327,6 +328,10 @@ const emptyRangePlot = {
 
 const visualV4Entries = [
   ...Object.entries(visualV4Catalog),
+  // The reported regression shape: a small decision tree stepped through by a
+  // sequence, which is where a fixed canvas and a global dim opacity showed
+  // worst. Kept in the gallery so it can be inspected in a real browser.
+  ['decisionTree', DECISION_TREE_VISUAL as unknown as LearningVisualV4],
   ['emptyRangePlot', emptyRangePlot],
 ] as Array<[VisualCatalogKey, LearningVisualV4]>
 
@@ -342,6 +347,13 @@ function visualDeclaredIds(visual: LearningVisualV4): string[] {
     case 'formula_steps': return content.steps.map(item => item.id)
     case 'study_map': return [...content.sections, ...content.concepts].map(item => item.id)
     case 'recall_deck': return content.cards.map(item => item.id)
+    case 'data_table': return [...content.columns, ...content.rows].map(item => item.id)
+    case 'state_transition': return [...content.states, ...content.transitions, ...(content.steps ?? [])].map(item => item.id)
+    case 'sequence_buffer': return [...content.slots, ...(content.pointers ?? []), ...(content.ranges ?? []), ...(content.steps ?? [])].map(item => item.id)
+    case 'sequence_diagram': return [...content.participants, ...content.messages].map(item => item.id)
+    case 'code_trace': return content.steps.map(item => item.id)
+    case 'field_2d': return []
+    case 'causal_loop': return [...content.variables, ...content.links, ...(content.loops ?? [])].map(item => item.id)
     case 'relation':
       switch (content.variant) {
         case 'comparison': return [...content.subjects, ...content.rows].map(item => item.id)

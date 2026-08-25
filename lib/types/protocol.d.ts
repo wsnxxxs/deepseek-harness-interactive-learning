@@ -9,20 +9,21 @@ export declare const VISUAL_PROTOCOL_V3: "dsh-learning/visual@3";
 export declare const VISUAL_RESULT_PROTOCOL_V3: "dsh-learning/visual-result@3";
 export declare const VISUAL_PROTOCOL_V4: "dsh-learning/visual@4";
 export declare const VISUAL_RESULT_PROTOCOL_V4: "dsh-learning/visual-result@4";
+export declare const RECALL_FEEDBACK_PROTOCOL_V1: "dsh-learning/recall-feedback@1";
 export declare const CHECKPOINT_PROTOCOL: "dsh-learning/checkpoint@1";
 export declare const CHECKPOINT_RESULT_PROTOCOL: "dsh-learning/checkpoint-result@1";
 export declare const CHECKPOINT_TRANSPORT_PROTOCOL: "dsh-learning/checkpoint-wait@1";
 export declare const LEARNING_CHECKPOINT_KINDS: readonly ["free_text", "single_choice", "numeric", "prediction", "code_slot"];
 export declare const LEARNING_CHECKPOINT_EVIDENCE_KINDS: readonly ["attempt", "prediction", "explanation", "contrast", "transfer"];
-export declare const LEARNING_VISUAL_KINDS_V4: readonly ["plot", "node_link", "scene_2d", "relation", "timeline", "formula_steps", "study_map", "recall_deck"];
+export declare const LEARNING_VISUAL_KINDS_V4: readonly ["plot", "node_link", "scene_2d", "relation", "timeline", "formula_steps", "study_map", "recall_deck", "data_table", "state_transition", "sequence_buffer", "sequence_diagram", "code_trace", "field_2d", "causal_loop"];
 export declare const LEARNING_ACTIVITY_KINDS: readonly ["parameter_explorer", "process_stepper", "structure_compare"];
 export declare const MAX_ACTIVITY_BYTES: number;
 export declare const MAX_RESPONSE_BYTES: number;
 export declare const MAX_MATH_DEPTH = 8;
 export declare const MAX_MATH_NODES = 64;
 export declare const MAX_VISUAL_MATH_DEPTH = 4;
-export declare const MATH_BINARY_OPERATORS: readonly ["add", "sub", "mul", "div", "pow"];
-export declare const MATH_UNARY_OPERATORS: readonly ["neg", "abs", "sqrt", "sin", "cos", "exp", "log", "sigmoid"];
+export declare const MATH_BINARY_OPERATORS: readonly ["add", "sub", "mul", "div", "pow", "min", "max"];
+export declare const MATH_UNARY_OPERATORS: readonly ["neg", "abs", "sqrt", "sin", "cos", "tan", "atan", "exp", "log", "sigmoid", "relu", "leaky_relu", "step", "normpdf", "floor", "ceil"];
 export type LearningActivityKind = typeof LEARNING_ACTIVITY_KINDS[number];
 export type LearningAction = 'submit' | 'skip' | 'cancel';
 export type LearningJson = null | boolean | number | string | LearningJson[] | {
@@ -37,11 +38,11 @@ export type MathExpressionV1 = {
     op: 'variable';
     name: string;
 } | {
-    op: 'add' | 'sub' | 'mul' | 'div' | 'pow';
+    op: typeof MATH_BINARY_OPERATORS[number];
     left: MathExpressionV1;
     right: MathExpressionV1;
 } | {
-    op: 'neg' | 'abs' | 'sqrt' | 'sin' | 'cos' | 'exp' | 'log' | 'sigmoid';
+    op: typeof MATH_UNARY_OPERATORS[number];
     value: MathExpressionV1;
 };
 export interface ParameterDefinitionV1 {
@@ -284,6 +285,14 @@ export type LearningCheckpointResponseV1 = {
 } | {
     number: number;
 };
+/**
+ * Why a non-submitted checkpoint ended.  The field is optional on v1 result
+ * records so older persisted receipts remain readable; new Host/Client
+ * receipts should always provide it.
+ */
+export type LearningCheckpointSkippedReasonV1 = 'learner-skipped' | 'client-unavailable' | 'client-response-timeout' | 'host-unavailable' | 'provider-failure';
+export type LearningCheckpointCancelledReasonV1 = 'learner-cancelled' | 'session-aborted' | 'plugin-disposed';
+export type LearningCheckpointOutcomeReasonV1 = LearningCheckpointSkippedReasonV1 | LearningCheckpointCancelledReasonV1;
 interface LearningCheckpointResultBaseV1 {
     protocol: typeof CHECKPOINT_RESULT_PROTOCOL;
     checkpointId: string;
@@ -295,9 +304,13 @@ export interface LearningCheckpointSubmittedResultV1 extends LearningCheckpointR
 }
 export interface LearningCheckpointSkippedResultV1 extends LearningCheckpointResultBaseV1 {
     status: 'skipped';
+    /** Optional only for backwards-compatible replay of pre-reason receipts. */
+    reason?: LearningCheckpointSkippedReasonV1;
 }
 export interface LearningCheckpointCancelledResultV1 extends LearningCheckpointResultBaseV1 {
     status: 'cancelled';
+    /** Optional only for backwards-compatible replay of pre-reason receipts. */
+    reason?: LearningCheckpointCancelledReasonV1;
 }
 export type LearningCheckpointResultV1 = LearningCheckpointSubmittedResultV1 | LearningCheckpointSkippedResultV1 | LearningCheckpointCancelledResultV1;
 /** Durable safe projection used only to recover one pending checkpoint wait. */
@@ -608,7 +621,243 @@ export interface LearningRecallDeckV4 {
     instructions?: string;
     cards: LearningRecallCardV4[];
 }
-export type LearningVisualContentV4 = LearningPlotV4 | LearningNodeLinkV4 | LearningScene2DV4 | LearningRelationV4 | LearningTimelineV4 | LearningFormulaStepsV4 | LearningStudyMapV4 | LearningRecallDeckV4;
+export type LearningTableValueV4 = string | number | boolean | null;
+export interface LearningDataTableColumnV4 {
+    id: string;
+    label: string;
+    type: 'string' | 'number' | 'boolean' | 'date';
+    unit?: string;
+}
+export interface LearningDataTableCellV4 {
+    columnId: string;
+    value: LearningTableValueV4;
+}
+export interface LearningDataTableRowV4 {
+    id: string;
+    cells: LearningDataTableCellV4[];
+    detail?: string;
+}
+export interface LearningDataTableSortV4 {
+    columnId: string;
+    direction: 'asc' | 'desc';
+}
+export interface LearningDataTableFilterV4 {
+    columnId: string;
+    operator: 'equals' | 'not_equals' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte';
+    value: LearningTableValueV4;
+}
+export interface LearningDataTableChartV4 {
+    type: 'line' | 'bar' | 'scatter';
+    xColumnId: string;
+    yColumnId: string;
+    seriesColumnId?: string;
+}
+export interface LearningDataTableV4 {
+    kind: 'data_table';
+    columns: LearningDataTableColumnV4[];
+    rows: LearningDataTableRowV4[];
+    outlierIds?: string[];
+    initialSort?: LearningDataTableSortV4;
+    initialFilter?: LearningDataTableFilterV4;
+    chart?: LearningDataTableChartV4;
+}
+export interface LearningStateTransitionStateV4 {
+    id: string;
+    label: string;
+    detail?: string;
+    tone?: LearningVisualToneV4;
+    initial?: boolean;
+    final?: boolean;
+}
+export interface LearningStateTransitionTransitionV4 {
+    id: string;
+    from: string;
+    to: string;
+    trigger: string;
+    guard?: string;
+    action?: string;
+    detail?: string;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningStateTransitionStepV4 {
+    id: string;
+    label: string;
+    currentStateId: string;
+    transitionId?: string;
+    description?: string;
+}
+export interface LearningStateTransitionV4 {
+    kind: 'state_transition';
+    states: LearningStateTransitionStateV4[];
+    transitions: LearningStateTransitionTransitionV4[];
+    steps?: LearningStateTransitionStepV4[];
+}
+export interface LearningSequenceBufferSlotV4 {
+    id: string;
+    index: number;
+    value: LearningTableValueV4;
+    label?: string;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningSequenceBufferPointerV4 {
+    id: string;
+    label: string;
+    index: number;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningSequenceBufferRangeV4 {
+    id: string;
+    label: string;
+    start: number;
+    end: number;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningSequenceBufferSlotSnapshotV4 {
+    slotId: string;
+    value?: LearningTableValueV4;
+}
+export interface LearningSequenceBufferPointerSnapshotV4 {
+    pointerId: string;
+    index: number;
+}
+export interface LearningSequenceBufferRangeSnapshotV4 {
+    rangeId: string;
+    start: number;
+    end: number;
+}
+export interface LearningSequenceBufferStepV4 {
+    id: string;
+    label: string;
+    description?: string;
+    slots?: LearningSequenceBufferSlotSnapshotV4[];
+    pointers?: LearningSequenceBufferPointerSnapshotV4[];
+    ranges?: LearningSequenceBufferRangeSnapshotV4[];
+}
+export interface LearningSequenceBufferV4 {
+    kind: 'sequence_buffer';
+    slots: LearningSequenceBufferSlotV4[];
+    pointers?: LearningSequenceBufferPointerV4[];
+    ranges?: LearningSequenceBufferRangeV4[];
+    steps?: LearningSequenceBufferStepV4[];
+}
+export interface LearningSequenceParticipantV4 {
+    id: string;
+    label: string;
+    detail?: string;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningSequenceMessageV4 {
+    id: string;
+    from: string;
+    to: string;
+    label: string;
+    type: 'sync' | 'async' | 'return' | 'self';
+    detail?: string;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningSequenceDiagramV4 {
+    kind: 'sequence_diagram';
+    participants: LearningSequenceParticipantV4[];
+    messages: LearningSequenceMessageV4[];
+}
+export interface LearningCodeTraceLineV4 {
+    number: number;
+    text: string;
+}
+export interface LearningCodeTraceVariableV4 {
+    name: string;
+    value: LearningTableValueV4;
+    type?: string;
+}
+export interface LearningCodeTraceStackFrameV4 {
+    id: string;
+    function: string;
+    line?: number;
+}
+export interface LearningCodeTraceStepV4 {
+    id: string;
+    label: string;
+    currentLine: number;
+    variables: LearningCodeTraceVariableV4[];
+    stack: LearningCodeTraceStackFrameV4[];
+    output?: string;
+    description?: string;
+}
+export interface LearningCodeTraceV4 {
+    kind: 'code_trace';
+    language: string;
+    code: string;
+    lines: LearningCodeTraceLineV4[];
+    steps: LearningCodeTraceStepV4[];
+}
+export interface LearningFieldAxisV4 {
+    label?: string;
+    min: number;
+    max: number;
+    samples?: number;
+}
+export interface LearningScalarFieldGridV4 {
+    columns: number;
+    rows: number;
+    values: number[];
+}
+export interface LearningVectorFieldGridV4 {
+    columns: number;
+    rows: number;
+    u: number[];
+    v: number[];
+}
+export interface LearningScalarFieldV4 {
+    samples?: LearningScalarFieldGridV4;
+    expression?: MathExpressionV1;
+    min?: number;
+    max?: number;
+}
+export interface LearningVectorFieldV4 {
+    samples?: LearningVectorFieldGridV4;
+    expression?: {
+        u: MathExpressionV1;
+        v: MathExpressionV1;
+    };
+}
+export interface LearningField2DV4 {
+    kind: 'field_2d';
+    xAxis: LearningFieldAxisV4;
+    yAxis: LearningFieldAxisV4;
+    scalar?: LearningScalarFieldV4;
+    vector?: LearningVectorFieldV4;
+}
+export interface LearningCausalVariableV4 {
+    id: string;
+    label: string;
+    detail?: string;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningCausalLinkV4 {
+    id: string;
+    from: string;
+    to: string;
+    polarity: 'positive' | 'negative';
+    delay?: number;
+    label?: string;
+    detail?: string;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningCausalLoopV4 {
+    id: string;
+    label: string;
+    type: 'reinforcing' | 'balancing';
+    linkIds: string[];
+    detail?: string;
+    tone?: LearningVisualToneV4;
+}
+export interface LearningCausalLoopDiagramV4 {
+    kind: 'causal_loop';
+    variables: LearningCausalVariableV4[];
+    links: LearningCausalLinkV4[];
+    loops?: LearningCausalLoopV4[];
+}
+export type LearningVisualContentV4 = LearningPlotV4 | LearningNodeLinkV4 | LearningScene2DV4 | LearningRelationV4 | LearningTimelineV4 | LearningFormulaStepsV4 | LearningStudyMapV4 | LearningRecallDeckV4 | LearningDataTableV4 | LearningStateTransitionV4 | LearningSequenceBufferV4 | LearningSequenceDiagramV4 | LearningCodeTraceV4 | LearningField2DV4 | LearningCausalLoopDiagramV4;
 export interface LearningVisualFrameV4 {
     id: string;
     label: string;
@@ -644,6 +893,18 @@ export interface LearningVisualResultV4 {
 }
 export declare const LEARNING_VISUAL_STATUSES: readonly ["ready", "unavailable"];
 export type LearningVisualStatusV4 = typeof LEARNING_VISUAL_STATUSES[number];
+/** A learner's explicit recall interaction, sent from the visual Client to Host. */
+export declare const LEARNING_RECALL_STATUSES: readonly ["revealed", "mastered", "review"];
+export type LearningRecallStatusV1 = typeof LEARNING_RECALL_STATUSES[number];
+export interface LearningRecallFeedbackV1 {
+    protocol: typeof RECALL_FEEDBACK_PROTOCOL_V1;
+    /** Session identity is part of the wire key; Host still checks it is active. */
+    sessionId: string;
+    /** The semantic visual call that owns the card. */
+    callId: string;
+    cardId: string;
+    status: LearningRecallStatusV1;
+}
 /** A stable, actionable protocol rejection surfaced to the tool call. */
 export declare class LearningProtocolError extends Error {
     readonly issues: readonly string[];
@@ -674,6 +935,8 @@ export declare function parseLearningVisualV3(value: unknown): LearningVisualV3;
 /** Validate the semantic, model-facing visual protocol while retaining V3 replay separately. */
 export declare function parseLearningVisualV4(value: unknown): LearningVisualV4;
 export declare function parseLearningVisualResultV4(value: unknown): LearningVisualResultV4;
+/** Parse the small Client → Host recall bridge payload. */
+export declare function parseLearningRecallFeedbackV1(value: unknown): LearningRecallFeedbackV1;
 export declare function parseLearningVisualResultV3(value: unknown): LearningVisualResultV3;
 export {};
 //# sourceMappingURL=protocol.d.ts.map
