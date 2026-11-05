@@ -1,0 +1,17 @@
+{
+  // Type-checks the Learning test suite (vitest strips types without checking
+  // them). Sources are type-checked directly rather than through emitted
+  // declarations, so this needs no prior build.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "rootDir": "..",
+    // Purity and lifecycle helpers are plain .mjs scripts; infer their types.
+    "allowJs": true
+  },
+  "include": ["./**/*.ts", "./**/*.tsx", "./**/*.mts", "../src/**/*"],
+  "exclude": ["./browser/dist"]
+}

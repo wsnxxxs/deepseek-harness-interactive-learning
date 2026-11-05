@@ -25,6 +25,7 @@ import {
   parseLearningRecallFeedbackV1,
   type LearningQuestionV2,
   type LearningRevealV2,
+  type LearningVisualV4,
 } from '../src/protocol.ts'
 import {
   decodeLearningDetail,
@@ -264,10 +265,12 @@ describe('semantic Learning Visual Protocol v4', () => {
     expect(MATH_BINARY_OPERATORS).toEqual(['add', 'sub', 'mul', 'div', 'pow', 'min', 'max'])
     expect(MATH_UNARY_OPERATORS).toContain('relu')
     expect(MATH_UNARY_OPERATORS).toContain('normpdf')
-    const visual = structuredClone(visualV4Catalog.derivativePlot)
+    const visual: LearningVisualV4 = structuredClone(visualV4Catalog.derivativePlot)
     if (visual.content.kind !== 'plot') throw new Error('fixture mismatch')
+    const curve = visual.content.series[0]
+    if (curve?.type !== 'curve') throw new Error('fixture mismatch')
     visual.content.series[0] = {
-      ...visual.content.series[0],
+      ...curve,
       expression: {
         op: 'max',
         left: { op: 'relu', value: { op: 'tan', value: { op: 'variable', name: 'x' } } },
@@ -398,7 +401,7 @@ describe('semantic Learning Visual Protocol v4', () => {
     }))
     expect(() => parseLearningVisualV4(visual)).toThrow(/1 to 160 edges/)
 
-    const formula = structuredClone(visualV4Catalog.powerRuleDerivation)
+    const formula: LearningVisualV4 = structuredClone(visualV4Catalog.powerRuleDerivation)
     if (formula.content.kind !== 'formula_steps') throw new Error('fixture mismatch')
     formula.content.steps = Array.from({ length: 17 }, (_, index) => ({
       id: `step_${String(index)}`,
@@ -406,7 +409,7 @@ describe('semantic Learning Visual Protocol v4', () => {
     }))
     expect(() => parseLearningVisualV4(formula)).toThrow(/2 to 16 formula steps/)
 
-    const deck = structuredClone(visualV4Catalog.derivativeRecallDeck)
+    const deck: LearningVisualV4 = structuredClone(visualV4Catalog.derivativeRecallDeck)
     if (deck.content.kind !== 'recall_deck') throw new Error('fixture mismatch')
     deck.content.cards = Array.from({ length: 33 }, (_, index) => ({
       id: `card_${String(index)}`,

@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import SessionStore, {
   KNOWN_SESSION_EVENT_TYPES,
   SessionId,
+  SessionSeq,
   type SessionEvent,
   type SessionEventMap,
 } from '@deepseek-ai/dsh-session'
@@ -861,7 +862,7 @@ describe('lossless session-event snapshots', () => {
     seq: number,
     data: SessionEventMap['learning/state'],
   ): SessionEvent {
-    return { type: 'learning/state', seq, time: 1_700_000_000_000 + seq, data }
+    return { type: 'learning/state', seq: SessionSeq(seq), time: 1_700_000_000_000 + seq, data }
   }
 
   it('round-trips a full identity-free snapshot and binds hydration to the current session', () => {
@@ -1058,7 +1059,7 @@ describe('lossless session-event snapshots', () => {
     const reset = resetLearnerState(corrected)
     const updatePayload = createLearnerStateSnapshotEvent(updated, 'update')
     const events: SessionEvent[] = [
-      { type: 'turn/start', seq: 0, time: 1, data: { turn: 0 } },
+      { type: 'turn/start', seq: SessionSeq(0), time: 1, data: { turn: 0 } },
       stateEvent(1, updatePayload),
       stateEvent(2, updatePayload),
       stateEvent(3, createLearnerStateSnapshotEvent(corrected, 'correction')),

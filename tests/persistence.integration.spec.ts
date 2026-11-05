@@ -10,6 +10,7 @@ import SessionStore, {
   type SessionEvent,
 } from '@deepseek-ai/dsh-session'
 // 0.2 JSONL persistence is a namespace plugin (named `name`/`Config`/`apply`).
+import type {} from '@deepseek-ai/dsh-session-persistence'
 import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'

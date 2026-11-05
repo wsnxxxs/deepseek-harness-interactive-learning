@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import UserQuestionService, { type AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -679,9 +680,9 @@ describe('non-blocking Learning Agent v4.1', () => {
     const first = await execute()
     const replay = await execute()
     expect(first.isError).toBe(false)
+    // Equality covers the receipt id; also require that a receipt was issued.
     expect(replay.value).toEqual(first.value)
-    expect((replay.value as LearningCheckpointResultV1).receiptId)
-      .toBe((first.value as LearningCheckpointResultV1).receiptId)
+    expect(first.value).toMatchObject({ receiptId: expect.any(String) })
   })
 })
 
@@ -847,12 +848,10 @@ describe('session-scoped learner-state Host wiring', () => {
     expect(await stateContext()).toBe('')
     expect(ctx.learningActivities.learnerState(agent)).toMatchObject({ revision: 0, mastery: 'unseen' })
 
-    agent.session.append('user/message' as never, {
-      id: 'ordinary-message-1',
-      role: 'user',
-      source: { kind: 'human' },
+    agent.session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'I need to understand FIFO queues.' }],
-    } as never)
+      source: { kind: 'user' },
+    }), { surfaceOp: 'append' })
     const goalUpdate = {
       action: 'update',
       basis: 'The learner explicitly asked to understand FIFO queues.',
@@ -1389,7 +1388,8 @@ describe('Learning checkpoint broker', () => {
       })
 
       expect(result.status).toBe(status)
-      expect(result.reason).toBe(status === 'skipped' ? 'learner-skipped' : status === 'cancelled' ? 'learner-cancelled' : undefined)
+      expect('reason' in result ? result.reason : undefined)
+        .toBe(status === 'skipped' ? 'learner-skipped' : status === 'cancelled' ? 'learner-cancelled' : undefined)
       expect(ask).toHaveBeenCalledTimes(1)
       expect(ask.mock.calls[0]?.[0].questions).toHaveLength(1)
       expect(ctx.learningActivities.pendingCount).toBe(0)
