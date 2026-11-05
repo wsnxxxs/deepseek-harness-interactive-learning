@@ -73,7 +73,7 @@ describe('authoritative compact Learning teaching policy', () => {
 
   it('states the interactive-tool budget once and leaves mechanics to the tools and Skill', () => {
     expectPolicyToCover(
-      'At most one per user turn: a visual (`visualize`)',
+      'At most one per user turn: a visual (`learning_visual_select`)',
       'or a checkpoint (`learning_checkpoint`) when one short learner response will decide your next move',
       'Keep your prose self-sufficient; the learner may skip either',
       '`learning_state_update` notes are for you; never mention them to the learner',
@@ -82,7 +82,7 @@ describe('authoritative compact Learning teaching policy', () => {
     // Host enforcement, wire protocols, and schema limits never reach the standing prompt.
     for (const leaked of [
       'compare-and-swap', 'revision', 'Host', 'protocol', 'dsh-learning/',
-      'formula_steps', '2 to 48 nodes', 'Mermaid', 'learning_visual_select', 'learning_checkpoint_select',
+      'formula_steps', '2 to 48 nodes', 'Mermaid', 'learning_checkpoint_select',
       'calibrate', 'teach-minimum',
     ]) {
       expect(LEARNING_TEACHING_POLICY).not.toContain(leaked)
@@ -100,7 +100,7 @@ describe('interactive-teaching progressive-disclosure Skill', () => {
   it('has a trigger description that names when to load it, within the catalog bound', () => {
     const description = skillDescription()
     expect(description.length).toBeLessThanOrEqual(500)
-    for (const trigger of ['level, goal, or time pressure is unclear', 'graded or submitted', 'supplies files', 'visualize']) {
+    for (const trigger of ['level, goal, or time pressure is unclear', 'graded or submitted', 'supplies files', 'learning_visual_select']) {
       expect(description).toContain(trigger)
     }
   })

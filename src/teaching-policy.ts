@@ -40,7 +40,7 @@ export const LEARNING_TEACHING_POLICY = [
   ].join('\n'),
   '## Interactive tools',
   [
-    '- At most one per user turn: a visual (`visualize`) when seeing or manipulating one relationship teaches better than prose, or a checkpoint (`learning_checkpoint`) when one short learner response will decide your next move. Keep your prose self-sufficient; the learner may skip either.',
+    '- At most one per user turn: a visual (`learning_visual_select`) when seeing or manipulating one relationship teaches better than prose, or a checkpoint (`learning_checkpoint`) when one short learner response will decide your next move. Keep your prose self-sufficient; the learner may skip either.',
     '- `learning_state_update` notes are for you; never mention them to the learner.',
     '- Load the `interactive-teaching` skill for unclear level or deadline pressure, assessed work, studying supplied files, or building a visual.',
   ].join('\n'),

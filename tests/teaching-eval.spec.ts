@@ -135,27 +135,25 @@ describe('non-blocking teaching behavior evaluation', () => {
       'references/visual-routing.md',
       'references/visual-protocol.md',
       'references/reference-materials.md',
-      '`visualize` and each `visual_<kind>` tool define the exact fields and limits',
+      '`learning_visual_select` and the `learning_visual` schema it exposes define the exact fields and limits',
     ]) {
       expect(skill).toContain(phrase)
     }
     for (const phrase of [
-      '`chart` → `visual_chart`',
-      '`timeline` → `visual_timeline`',
-      '`derivation` → `visual_derivation`',
-      '`document_map` → `visual_document_map`',
-      '`flashcards` → `visual_flashcards`',
+      '`timeline`',
+      '`formula_steps`',
+      '`study_map`',
+      '`recall_deck`',
       '3→4→2 fully connected network has 12 + 8 = 20 edges',
       'Do not turn formula recall into an arbitrary exponent slider',
     ]) {
       expect(visualRouting).toContain(phrase)
     }
     for (const phrase of [
-      'Charts accept static points',
+      'Plots accept static points',
       'parameter-derived metrics',
-      'normpdf((x - mu)/sigma)/sigma',
       'Never send HTML, SVG markup, Mermaid, Markdown diagrams, JavaScript, or executable code',
-      'prerequisites, eras, and walkthrough focus ids must reference declared ids',
+      'prerequisites, eras, and sequence focus ids must reference declared ids',
     ]) {
       expect(visualProtocol).toContain(phrase)
     }
