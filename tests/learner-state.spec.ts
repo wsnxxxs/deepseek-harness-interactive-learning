@@ -1113,8 +1113,8 @@ describe('lossless session-event snapshots', () => {
       )
 
       const child = ctx.sessions.fork(parent, undefined, SessionId('learner-child'))
-      const parentAtFork = foldLearnerStateSession(String(parent.id), parent.events)
-      const childAtFork = foldLearnerStateSession(String(child.id), child.events)
+      const parentAtFork = foldLearnerStateSession(String(parent.id), parent.snapshotEvents())
+      const childAtFork = foldLearnerStateSession(String(child.id), child.snapshotEvents())
       expect(parentAtFork).toMatchObject({ sessionId: 'learner-parent', goal: inherited.goal })
       expect(childAtFork).toMatchObject({ sessionId: 'learner-child', goal: inherited.goal })
 
@@ -1137,12 +1137,12 @@ describe('lossless session-event snapshots', () => {
         createLearnerStateSnapshotEvent(childNext, 'update'),
       )
 
-      expect(foldLearnerStateSession(String(parent.id), parent.events)).toMatchObject({
+      expect(foldLearnerStateSession(String(parent.id), parent.snapshotEvents())).toMatchObject({
         sessionId: 'learner-parent',
         progressSignal: 'progressing',
         readiness: 'unknown',
       })
-      expect(foldLearnerStateSession(String(child.id), child.events)).toMatchObject({
+      expect(foldLearnerStateSession(String(child.id), child.snapshotEvents())).toMatchObject({
         sessionId: 'learner-child',
         progressSignal: 'unknown',
         readiness: 'needs-foothold',

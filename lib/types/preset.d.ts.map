@@ -1,1 +1,1 @@
-{"version":3,"file":"preset.d.ts","sourceRoot":"","sources":["../../src/preset.ts"],"names":[],"mappings":"AAQA,wFAAwF;AACxF,eAAO,MAAM,6BAA6B,QAAwD,CAAA;AAElG,yEAAyE;AACzE,eAAO,MAAM,+BAA+B,QAAiE,CAAA"}
+{"version":3,"file":"preset.d.ts","sourceRoot":"","sources":["../../src/preset.ts"],"names":[],"mappings":"AAQA,kCAAkC;AAClC,eAAO,MAAM,6BAA6B,QAAwD,CAAA;AAElG;;;;GAIG;AACH,eAAO,MAAM,+BAA+B,QAAiE,CAAA;AAE7G,iEAAiE;AACjE,eAAO,MAAM,6BAA6B,QAAwE,CAAA;AAElH,kFAAkF;AAClF,eAAO,MAAM,8BAA8B,QAAiE,CAAA"}

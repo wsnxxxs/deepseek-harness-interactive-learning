@@ -11,12 +11,18 @@ const HASHED_CHUNK_NAME = /-[A-Za-z0-9_-]{8,16}\.js$/
 const RELATIVE_JS_REFERENCE = /["'](\.{1,2}\/[^"']+\.js)["']/g
 const SOURCE_MAP_REFERENCE = /\/\/# sourceMappingURL=([^\s]+)/g
 
+// Harness 0.2 roster: `slots` comes from the UI renderer (the retired
+// dsh-client-runtime provided it in 0.1), `locale` from the locale plugin, the
+// composer chain and keyed tool-view slots from conversation/tool, the pending
+// Learning question carrier from the question plugin, and the optional recall
+// RPC from the Connection plugin.
 export const EXPECTED_WEB_CLIENT_INJECT = Object.freeze([
-  '@deepseek-ai/dsh-client-runtime',
+  '@deepseek-ai/dsh-client-ui-renderer',
   '@deepseek-ai/dsh-client-locale',
   '@deepseek-ai/dsh-client-ui-conversation',
   '@deepseek-ai/dsh-client-ui-tool',
-  '@deepseek-ai/dsh-api-remotes',
+  '@deepseek-ai/dsh-client-ui-user-questions',
+  '@deepseek-ai/dsh-client-connection',
 ])
 
 function normalizePath(path) {

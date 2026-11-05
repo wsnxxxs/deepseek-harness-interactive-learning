@@ -1,6 +1,6 @@
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
@@ -14,13 +14,15 @@ import {
   renderLearnerStateTranscript,
   serializeLearnerStateSnapshot,
 } from '../src/learner-state.ts'
+import { executeTool, mountAgentRegistry, nativeToolExecutor } from './host-harness.ts'
 
 async function mountLearningServices(): Promise<Context> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
-  await ctx.plugin(AgentRegistry)
+  await mountAgentRegistry(ctx)
   await ctx.plugin(UserQuestionService)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(nativeToolExecutor)
   await ctx.plugin(SystemPrompt)
   const [{ LearningActivityBroker }, learningAgent] = await Promise.all([
     import('../src/broker.ts'),
@@ -80,6 +82,7 @@ describe('learner state survives message-surface compaction', () => {
     const session = ctx.sessions.create(sessionId)
     const agent = agentFor(session)
     const disposeAgent = ctx.agents.register(agent)
+    await disposeAgent
 
     // A realistic surface: ordinary turns interleaved with state observations.
     for (const [index, event] of OBSERVATIONS.entries()) {
@@ -88,9 +91,8 @@ describe('learner state survives message-surface compaction', () => {
         source: { kind: 'user' },
       }), { surfaceOp: 'append' })
 
-      const update = await ctx.tools.execute({
-        signal: new AbortController().signal,
-        callId: CallId(`compaction-update-${String(index)}`),
+      const update = await executeTool(ctx, {
+        callId: `compaction-update-${String(index)}`,
         name: 'learning_state_update',
         arguments: { action: 'update', event },
         agent,
@@ -103,7 +105,7 @@ describe('learner state survives message-surface compaction', () => {
     expect(before.goal).toBe('Understand why gradients vanish')
     expect(before.gap).toBe('notation')
 
-    const events = structuredClone(session.events) as SessionEvent[]
+    const events = structuredClone(session.snapshotEvents()) as SessionEvent[]
     const stateEvents = events.filter(event => event.type === LEARNER_STATE_SESSION_EVENT_TYPE)
     expect(stateEvents).toHaveLength(OBSERVATIONS.length)
     expect(events.length).toBeGreaterThan(stateEvents.length)
@@ -131,7 +133,7 @@ describe('learner state survives message-surface compaction', () => {
     const newestOnly = foldLearnerStateSession(String(sessionId), [checkpoint, stateEvents.at(-1) as SessionEvent])
     expect(serializeLearnerStateSnapshot(newestOnly)).toBe(serializeLearnerStateSnapshot(before))
 
-    disposeAgent()
+    await disposeAgent()
     await ctx.fiber.dispose()
   }, 30_000)
 
@@ -141,10 +143,10 @@ describe('learner state survives message-surface compaction', () => {
     const session = ctx.sessions.create(sessionId)
     const agent = agentFor(session)
     const disposeAgent = ctx.agents.register(agent)
+    await disposeAgent
 
-    await ctx.tools.execute({
-      signal: new AbortController().signal,
-      callId: CallId('compaction-loss-update'),
+    await executeTool(ctx, {
+      callId: 'compaction-loss-update',
       name: 'learning_state_update',
       arguments: { action: 'update', event: OBSERVATIONS[0] },
       agent,
@@ -155,13 +157,13 @@ describe('learner state survives message-surface compaction', () => {
     // The dependency is precise: surface events are irrelevant to the fold, and
     // `learning/state` events are the whole of it. A backend that discarded them
     // would silently reset the lesson's memory rather than fail loudly.
-    const events = structuredClone(session.events) as SessionEvent[]
+    const events = structuredClone(session.snapshotEvents()) as SessionEvent[]
     const withoutState = events.filter(event => event.type !== LEARNER_STATE_SESSION_EVENT_TYPE)
     const lost = foldLearnerStateSession(String(sessionId), withoutState)
     expect(lost.revision).toBe(0)
     expect(lost.goal).toBeNull()
 
-    disposeAgent()
+    await disposeAgent()
     await ctx.fiber.dispose()
   }, 30_000)
 })

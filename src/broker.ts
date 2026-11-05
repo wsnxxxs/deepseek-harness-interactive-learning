@@ -455,11 +455,14 @@ export class LearningActivityBroker extends Service {
     const session = agent.session
     const sessionId = String(session.id)
     const current = this.learnerStates.get(sessionId)
-    if (current?.session === session && current.eventCount === session.events.length) {
+    // `Session.events` was removed in 0.2: `seq` is the cheap length read and
+    // `snapshotEvents()` the synchronous (cached until the next append) log read.
+    const eventCount = Number(session.seq)
+    if (current?.session === session && current.eventCount === eventCount) {
       return current.state
     }
-    const state = foldLearnerStateSession(sessionId, session.events)
-    this.learnerStates.set(sessionId, { session, eventCount: session.events.length, state })
+    const state = foldLearnerStateSession(sessionId, session.snapshotEvents())
+    this.learnerStates.set(sessionId, { session, eventCount, state })
     return state
   }
 
@@ -600,7 +603,7 @@ export class LearningActivityBroker extends Service {
     )
     this.learnerStates.set(String(session.id), {
       session,
-      eventCount: session.events.length,
+      eventCount: Number(session.seq),
       state,
     })
   }

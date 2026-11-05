@@ -159,8 +159,7 @@ describe('session-scoped learning plan', () => {
 describe('plan events through the model-facing tool', () => {
   it('records and advances a route end to end, and shows it to the next model step', async () => {
     const { Context } = await import('@deepseek-ai/cordis')
-    const AgentRegistry = (await import('@deepseek-ai/dsh-agent')).default
-    const { CallId } = await import('@deepseek-ai/dsh-llm')
+    const { executeTool, mountAgentRegistry, nativeToolExecutor } = await import('./host-harness.ts')
     const SessionStore = (await import('@deepseek-ai/dsh-session')).default
     const SystemPrompt = (await import('@deepseek-ai/dsh-system-prompt')).default
     const ToolRuntime = (await import('@deepseek-ai/dsh-tools')).default
@@ -169,9 +168,10 @@ describe('plan events through the model-facing tool', () => {
 
     const ctx = new Context()
     await ctx.plugin(SessionStore)
-    await ctx.plugin(AgentRegistry)
+    await mountAgentRegistry(ctx)
     await ctx.plugin(UserQuestionService)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin((await import('../src/broker.ts')).LearningActivityBroker)
     await ctx.plugin(await import('../src/agent.ts'))
@@ -180,9 +180,9 @@ describe('plan events through the model-facing tool', () => {
     const session = ctx.sessions.create(SessionId('plan-tool-session'))
     const agent = { id: session.id, session } as never
     const disposeAgent = ctx.agents.register(agent)
-    const run = (callId: string, event: unknown) => ctx.tools.execute({
-      signal: new AbortController().signal,
-      callId: CallId(callId),
+    await disposeAgent
+    const run = (callId: string, event: unknown) => executeTool(ctx, {
+      callId,
       name: 'learning_state_update',
       arguments: { action: 'update', event },
       agent,
@@ -213,7 +213,7 @@ describe('plan events through the model-facing tool', () => {
     expect(injected).toContain('plan: "Read the notes and derive the chain rule" (1/2 evidenced)')
     expect(injected).toContain('plan_step: "Derive it from the limit definition"')
 
-    disposeAgent()
+    await disposeAgent()
     await ctx.fiber.dispose()
   }, 30_000)
 })

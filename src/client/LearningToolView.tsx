@@ -1,8 +1,6 @@
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import { useEffect, useMemo } from 'react'
-import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
-import type { PendingInteraction, ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
 import {
   parseLearningCheckpointV1,
   parseLearningCheckpointResultV1,
@@ -36,7 +34,9 @@ import {
   type LearningVisualV4 as LearningVisualV4Definition,
   type LearningVisualResultV4,
 } from '../protocol.ts'
-import { envelopeOf, LearningInteraction, type LearningQuestionWait } from './LearningComposer.tsx'
+import { envelopeOf, LearningInteraction } from './LearningComposer.tsx'
+import type { LearningQuestionWait } from './learning-waits.ts'
+import { LearningMarkdown, MarkdownLabelsProvider, markdownLabelsOf } from './markdown.tsx'
 import css from './LearningActivity.module.css'
 import { learningScope } from './tokens.ts'
 import { emitLearningCallLifecycle, emitLearningUiLifecycle } from './lifecycle.ts'
@@ -44,7 +44,24 @@ import { LearningVisual } from './LearningVisual.tsx'
 import { LearningVisualV4, type LearningVisualV4Labels } from './visuals/index.tsx'
 import type { LearningLocaleKey } from './locales.ts'
 
-type LearningToolViewProps = ToolCallViewProps & PropsLocale<'interactive-learning'>
+/**
+ * Business face injected by this package's registration (see `index.ts`):
+ * the owning Session identity and a selector hook over the Learning waits the
+ * composer seat currently claims.
+ */
+export interface LearningToolViewInjected {
+  /** Session the rendered call belongs to, bound per Session by the inject factory. */
+  learningSessionId: string
+  /** Selector hook over the claimed Learning waits (`hooks.learningWaits`). */
+  useLearningWaits: <S>(selector: (waits: readonly LearningQuestionWait[]) => S, equal?: (left: S, right: S) => boolean) => S
+}
+
+export type LearningToolViewProps =
+  ToolCallViewProps
+  & LearningToolViewInjected
+  & PropsLocale<'interactive-learning'>
+
+type LearningToolBlock = LearningToolViewProps['block']
 
 /** Every payload shape this view can render, live or from durable replay. */
 type LearningCallDefinition =
@@ -177,15 +194,19 @@ function visualLabelsOf(t: LearningToolViewProps['t']): LearningVisualV4Labels {
   return Object.fromEntries(Object.entries(VISUAL_LABEL_KEYS).map(([label, key]) => [label, t(key)])) as unknown as LearningVisualV4Labels
 }
 
-/** Read the model-authored arguments, whichever block shape carries them. */
-function argsRawOf(block: ToolCallBlock): string | undefined {
-  return 'kind' in block ? block.call?.argsRaw : block.argsRaw
+/**
+ * Read the model-authored arguments of a dispatched or settled call. A
+ * preparing call exposes only its lazy partial-argument reader, never text.
+ */
+function argsRawOf(phase: LearningToolViewProps['phase'], block: LearningToolBlock): string | undefined {
+  if (phase === 'preparing') return undefined
+  return 'kind' in block ? block.call?.argsRaw : 'argsRaw' in block ? block.argsRaw : undefined
 }
 
-/** Concatenate the tool result text, whichever block shape carries it. */
-function resultTextOf(block: ToolCallBlock): string {
+/** Concatenate the tool result text of a settled call. */
+function resultTextOf(block: LearningToolBlock): string {
   if (!('kind' in block)) return ''
-  return block.content.filter(item => item.type === 'text').map(item => item.text).join('')
+  return block.content.flatMap(item => item.type === 'text' ? [item.text] : []).join('')
 }
 
 function issuesOf(cause: unknown): readonly string[] {
@@ -245,6 +266,22 @@ function textFallbackOf(parsed: Record<string, unknown>): LearningTextFallback |
  * text, never as Markdown or HTML.
  */
 const PARTIAL_TITLE = /"title"\s*:\s*"((?:[^"\\]|\\.){0,240})"/
+
+/** Minimal face of the lazy partial-argument reader a preparing call carries. */
+interface PartialArgsReader {
+  text(key: string): string | undefined
+  complete(key: string): boolean
+  stringExceeds(key: string, maxLength: number): boolean
+}
+
+/** Same title recovery for a preparing call, read through its partial-argument view. */
+function streamingTitleOfArgs(args: PartialArgsReader | undefined): string | undefined {
+  if (args === undefined) return undefined
+  if (!args.complete('protocol') || args.text('protocol') !== VISUAL_PROTOCOL_V4) return undefined
+  if (!args.complete('title') || args.stringExceeds('title', 240)) return undefined
+  const trimmed = args.text('title')?.trim()
+  return trimmed === undefined || trimmed === '' || trimmed.length > 200 ? undefined : trimmed
+}
 
 function streamingTitleOf(raw: string): string | undefined {
   if (!raw.includes(VISUAL_PROTOCOL_V4)) return undefined
@@ -324,7 +361,7 @@ function parseVisualResult(text: string): LearningVisualResultV3 | LearningVisua
   } catch { return undefined }
 }
 function pendingActivity(
-  interactions: readonly PendingInteraction[],
+  interactions: readonly LearningQuestionWait[],
   sessionId: string,
   activity: LearningCallDefinition | undefined,
   callId: string | undefined,
@@ -332,8 +369,8 @@ function pendingActivity(
   if (activity === undefined) return undefined
   if (activity.protocol === VISUAL_PROTOCOL_V3 || activity.protocol === VISUAL_PROTOCOL_V4) return undefined
   if (activity.protocol === CHECKPOINT_PROTOCOL) {
-    return interactions.find((interaction): interaction is LearningQuestionWait => {
-      if (interaction.kind !== 'question' || String(interaction.sessionId) !== sessionId) return false
+    return interactions.find((interaction) => {
+      if (String(interaction.sessionId) !== sessionId) return false
       const envelope = envelopeOf(interaction)
       return envelope !== undefined
         && 'checkpoint' in envelope
@@ -342,8 +379,8 @@ function pendingActivity(
     })
   }
   if (activity.protocol === ACTIVITY_PROTOCOL_V2) {
-    return interactions.find((interaction): interaction is LearningQuestionWait => {
-      if (interaction.kind !== 'question' || String(interaction.sessionId) !== sessionId) return false
+    return interactions.find((interaction) => {
+      if (String(interaction.sessionId) !== sessionId) return false
       const envelope = envelopeOf(interaction)
       if (envelope === undefined || !('phase' in envelope)) return false
       if (envelope.callId !== undefined && envelope.callId !== callId) return false
@@ -354,8 +391,8 @@ function pendingActivity(
     })
   }
   const canonical = JSON.stringify(activity)
-  return interactions.find((interaction): interaction is LearningQuestionWait => {
-    if (interaction.kind !== 'question' || String(interaction.sessionId) !== sessionId) return false
+  return interactions.find((interaction) => {
+    if (String(interaction.sessionId) !== sessionId) return false
     const envelope = envelopeOf(interaction)
     return envelope !== undefined && 'activity' in envelope && JSON.stringify(envelope.activity) === canonical
   })
@@ -491,7 +528,7 @@ function LearningFallback({
       {reason === undefined ? null : <p className={css.fallbackReason}>{reason}</p>}
       {body === undefined
         ? (plain === undefined || plain === '' ? null : <p className={css.visualTextFallback}>{plain}</p>)
-        : <div className={css.fallbackText}><MarkdownText text={body} /></div>}
+        : <div className={css.fallbackText}><LearningMarkdown text={body} /></div>}
     </div>
   )
 }
@@ -518,35 +555,55 @@ function LearningReceipt({
   )
 }
 
-export function LearningToolView({ block, inspect, t, useSession, sessionId }: LearningToolViewProps) {
-  void inspect
-  const done = 'kind' in block
-  const raw = argsRawOf(block)
+/**
+ * Keyed tool view for every Learning tool name. Localized Markdown chrome is
+ * provided once here for every nested activity and visual renderer.
+ */
+export function LearningToolView(props: LearningToolViewProps) {
+  const markdownLabels = useMemo(() => markdownLabelsOf(props.t), [props.t])
+  return (
+    <MarkdownLabelsProvider value={markdownLabels}>
+      <LearningToolSurface {...props} />
+    </MarkdownLabelsProvider>
+  )
+}
+
+function LearningToolSurface({ phase, block, callId, t, useLearningWaits, learningSessionId }: LearningToolViewProps) {
+  const done = phase === 'result'
+  const raw = argsRawOf(phase, block)
   const resultText = resultTextOf(block)
   const isError = 'kind' in block && block.isError === true
-  const callId = block.callId
+  const sessionId = learningSessionId
+  // A preparing call has no argument text yet; its title is read lazily.
+  const preparingTitle = phase === 'preparing' ? streamingTitleOfArgs(block.args as PartialArgsReader | undefined) : undefined
 
   // Parse the closed payloads exactly once per distinct wire string. This view
   // re-renders on every session snapshot, and re-parsing would mint a new
   // definition identity each time — resetting the learner's sequence frame,
   // revealed recall card and probed values on every unrelated update.
-  const { definition, issues, fallback, streamingTitle } = useMemo(() => parseLearningCall(raw), [raw])
+  const { definition, issues, fallback, streamingTitle: parsedTitle } = useMemo(() => parseLearningCall(raw), [raw])
+  const streamingTitle = parsedTitle ?? preparingTitle
   const result = useMemo(() => parseLearningResult(resultText, definition), [resultText, definition])
   const visualResult = useMemo(() => parseVisualResult(resultText), [resultText])
   const labels = useMemo(() => visualLabelsOf(t), [t])
 
-  const interactions = useSession(snapshot => snapshot.pending)
+  const interactions = useLearningWaits(waits => waits)
   const matched = pendingActivity(interactions, String(sessionId), definition, callId)
 
   useEffect(() => {
-    if (done || raw === undefined || raw === '') return
+    if (done) return
+    if (phase === 'preparing') {
+      emitLearningCallLifecycle('learning.call.stream_started', { callId })
+      return
+    }
+    if (raw === undefined || raw === '') return
     if (definition === undefined) emitLearningCallLifecycle('learning.call.stream_started', { callId })
     else emitLearningCallLifecycle('learning.call.args_completed', {
       callId,
       phase: definition.protocol === ACTIVITY_PROTOCOL_V2 ? definition.phase : undefined,
       seq: definition.protocol === ACTIVITY_PROTOCOL_V2 ? definition.seq : undefined,
     })
-  }, [definition, callId, done, raw])
+  }, [definition, callId, done, raw, phase])
 
   if (definition === undefined) {
     // Arguments that are merely incomplete keep streaming; only a payload that
@@ -670,7 +727,7 @@ export function LearningToolView({ block, inspect, t, useSession, sessionId }: L
     }
     return (
       <div className={css.legacyReveal} {...learningScope} data-learning-result={v2Response.action}>
-        <MarkdownText text={definition.feedback.explanation} />
+        <LearningMarkdown text={definition.feedback.explanation} />
         {definition.feedback.answer === undefined ? null : <strong>{definition.feedback.answer}</strong>}
       </div>
     )

@@ -1,4 +1,4 @@
-import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { LearningMarkdown } from './markdown.tsx'
 import { useId, useState, type CSSProperties } from 'react'
 import type { LearningJson } from '../protocol.ts'
 import type { ActivityRendererProps } from './types.ts'
@@ -111,7 +111,7 @@ export function ProcessStepper({ activity, busy, onSubmit, t }: ActivityRenderer
         {!isRevealed ? (
           <button className={css.revealButton} type="button" disabled={busy || !canReveal} onClick={reveal}>{t('reveal')}</button>
         ) : (
-          <div className={css.revealed}><MarkdownText text={step.content} /></div>
+          <div className={css.revealed}><LearningMarkdown text={step.content} /></div>
         )}
       </section>
       <div className={css.navigation}>

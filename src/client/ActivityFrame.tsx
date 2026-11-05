@@ -1,4 +1,4 @@
-import { MarkdownText } from '@deepseek-ai/dsh-client-ui-primitives'
+import { LearningMarkdown } from './markdown.tsx'
 import type { ReactNode } from 'react'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { LearningActivityV1 } from '../protocol.ts'
@@ -30,7 +30,7 @@ export function ActivityFrame({
       {activity.scaffold === undefined ? null : (
         <details className={css.scaffold}>
           <summary>{t('scaffold')}</summary>
-          <MarkdownText text={activity.scaffold} />
+          <LearningMarkdown text={activity.scaffold} />
         </details>
       )}
       {error === null ? null : <p className={css.error} role="alert">{error}</p>}

@@ -14,8 +14,6 @@
 import { writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry from '@deepseek-ai/dsh-agent'
-import { CallId } from '@deepseek-ai/dsh-llm'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
@@ -29,6 +27,7 @@ import {
   type TeachingEvalCandidate,
 } from '../src/eval.ts'
 import { routeLearningRequest } from '../src/teaching-route.ts'
+import { executeTool, mountAgentRegistry, nativeToolExecutor } from './host-harness.ts'
 import {
   VISUAL_RESULT_PROTOCOL_V4,
   parseLearningVisualV4,
@@ -80,7 +79,7 @@ const baseUrl = (process.env.DSH_CANARY_BASE_URL ?? 'https://api.xiaomimimo.com/
 const model = process.env.DSH_CANARY_MODEL ?? 'mimo-v2.5'
 
 const ctx = new Context()
-await ctx.plugin(AgentRegistry)
+await mountAgentRegistry(ctx)
 await ctx.plugin(UserQuestionService)
 ctx.provide('clientModules', {
   graph: () => ({
@@ -89,6 +88,7 @@ ctx.provide('clientModules', {
   }),
 } as never)
 await ctx.plugin(ToolRuntime)
+await ctx.plugin(nativeToolExecutor)
 await ctx.plugin(SystemPrompt)
 await ctx.plugin(LearningActivityBroker)
 await ctx.plugin(learningAgent)
@@ -324,9 +324,8 @@ async function runVisualScenario(): Promise<{
       if (selection.kind !== 'plot') throw new Error(`canary model selected ${String(selection.kind)}; expected plot`)
       const focusCount = Number(typeof selection.learnerAction === 'string') + Number(typeof selection.pairedQuestion === 'string')
       if (focusCount !== 1) throw new Error('visual selector must include exactly one learnerAction or pairedQuestion')
-      const selected = await ctx.tools.execute({
-        signal: new AbortController().signal,
-        callId: CallId(call.id),
+      const selected = await executeTool(ctx, {
+        callId: call.id,
         name: call.function.name,
         arguments: selection,
       })
@@ -342,9 +341,8 @@ async function runVisualScenario(): Promise<{
       if (visualCall !== undefined) throw new Error('model called learning_visual more than once')
       visualCall = call
       visual = validateCanaryVisual(call)
-      const result = await ctx.tools.execute({
-        signal: new AbortController().signal,
-        callId: CallId(call.id),
+      const result = await executeTool(ctx, {
+        callId: call.id,
         name: call.function.name,
         arguments: parseToolArguments(call),
       })

@@ -1,11 +1,16 @@
 /** Client entry: one composer takeover and one replayable keyed tool renderer. */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
+import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
+// Type-only: pulls the locale plugin's Context merge (ctx.locale) and the
+// shared `common` vocabulary the Markdown chrome labels read.
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+// Type-only: the SlotMap merges of `conversation.composer` and `tool.call.toolview`.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
-import type {} from '@deepseek-ai/dsh-client-ui-slots'
+import type { SlotCore, SlotMap } from '@deepseek-ai/dsh-client-ui-slots'
 import { LearningComposer, selectLearningActivity } from './LearningComposer.tsx'
 import { LearningToolView } from './LearningToolView.tsx'
+import { createLearningWaitStore } from './learning-waits.ts'
 import { subscribeLearningUiLifecycle } from './lifecycle.ts'
 import { en, zh } from './locales.ts'
 
@@ -13,7 +18,6 @@ export { ActivityRendererRegistry, activityRendererRegistry } from './ActivityRe
 export { subscribeLearningUiLifecycle, type LearningUiLifecycleEvent } from './lifecycle.ts'
 
 const NS = 'interactive-learning'
-type RecallConnection = { rpc: { call(channel: string, endpoint: string, payload: unknown): Promise<unknown> } }
 export const LEARNING_TOOL_VIEW_KEYS = [
   'learning_visual',
   'learning_checkpoint',
@@ -29,17 +33,34 @@ export function LearningStateUpdateToolView(): null {
   return null
 }
 
+/** One synchronous effect installed while an injected slot declaration is live. */
+type SlotInjectionEffect = (() => void) | Iterable<() => void, void, void>
+
+/**
+ * The slot-registry face this plugin uses: the renderer-owned `ctx.slots`
+ * service (`packages/client/ui-renderer/src/client/registry.ts`), whose
+ * `register` is exactly {@link SlotCore.register}. Named structurally so the
+ * Client compiles without a type edge to the renderer implementation package.
+ */
+interface LearningSlots {
+  register: SlotCore['register']
+  inject(key: keyof SlotMap & string, callback: () => SlotInjectionEffect): () => void
+}
+
+/** Root Client Context with the services this plugin injects. */
+type LearningClientContext = Context & { slots: LearningSlots }
+
 export const name = 'interactive-learning-client'
 export const inject = ['slots', 'locale']
 
-export function apply(ctx: ClientContext): void {
+export function apply(ctx: LearningClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'interactive-learning: dictionaries')
 
   // Reuse the existing Client lifecycle stream as the UI-to-transport seam;
   // the payload itself goes through Connection RPC and is handled by the Host
   // broker, so a renderer never owns a second message bus.
   ctx.inject(['connection'], (connectionCtx) => {
-    const connection = connectionCtx.get('connection') as RecallConnection | undefined
+    const connection = connectionCtx.get('connection') as ConnectionHandle | undefined
     if (connection === undefined) return
     connectionCtx.effect(() => subscribeLearningUiLifecycle(event => {
       if (event.name !== 'learning.recall.rated'
@@ -57,19 +78,25 @@ export function apply(ctx: ClientContext): void {
         // The bridge is intentionally best-effort for rendering. A rejected
         // RPC or an explicit Host error never blocks the learner's click;
         // both are deliberately left to the local replay projection.
-        if (typeof result === 'object' && result !== null
-          && (result as { ok?: unknown }).ok === false) return
+        if (!result.ok) return
       }).catch(() => {
         // The canonical rating is still retained in sessionStorage.
       })
     }), 'interactive-learning: recall feedback bridge')
   })
 
+  // The composer seat claims a Learning-owned question; while it holds the
+  // claim it publishes the carrier here, and the tool call's own view reads
+  // it back to render the interaction inline.
+  const waits = createLearningWaitStore()
+
   ctx.slots.inject('conversation.composer', () => ctx.slots.register({
     name: 'conversation.composer',
     select: selectLearningActivity,
+    // Lower tries first: claim before the generic question composer (0).
     priority: -100,
     locale: NS,
+    inject: () => ({ publishLearningWait: waits.publish }),
   }, LearningComposer))
 
   for (const key of LEARNING_TOOL_VIEW_KEYS) {
@@ -85,6 +112,7 @@ export function apply(ctx: ClientContext): void {
       name: 'tool.call.toolview',
       key,
       locale: NS,
+      inject: (sessionId) => ({ learningSessionId: String(sessionId), hooks: { learningWaits: waits } }),
     }, LearningToolView))
   }
 }

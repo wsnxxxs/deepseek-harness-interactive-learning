@@ -1,12 +1,16 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { StrictMode, type ComponentType } from 'react'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import { StrictMode } from 'react'
 import { ActivityRendererRegistry, activityRendererRegistry } from '../src/client/ActivityRenderer.tsx'
 import { LearningVisual } from '../src/client/LearningVisual.tsx'
 import { LearningCheckpoint } from '../src/client/LearningCheckpoint.tsx'
-import { LearningToolView } from '../src/client/LearningToolView.tsx'
+import {
+  createLearningWaitStore,
+  type LearningQuestionAnswerItem,
+  type LearningQuestionWait,
+} from '../src/client/learning-waits.ts'
+import { LearningComposer, selectLearningActivity } from '../src/client/LearningComposer.tsx'
 import { LEARNING_TOOL_VIEW_KEYS, LearningStateUpdateToolView } from '../src/client/index.ts'
 import { subscribeLearningUiLifecycle } from '../src/client/lifecycle.ts'
 import { en } from '../src/client/locales.ts'
@@ -27,26 +31,8 @@ import {
   learningCheckpointQuestionId,
 } from '../src/transport.ts'
 import { logisticVisual, questionRound, visualV4Catalog } from './fixtures.ts'
+import { preparingBlock, startedBlock, t, ToolView, toolViewProps } from './toolview-harness.tsx'
 
-const t = ((key: keyof typeof en, params?: Record<string, string | number>) => {
-  let value: string = en[key]
-  for (const [name, replacement] of Object.entries(params ?? {})) {
-    value = value.replace(`{${name}}`, String(replacement))
-  }
-  return value
-}) as TranslateNS<'interactive-learning'>
-
-const ToolView = LearningToolView as unknown as ComponentType<{
-  block: unknown
-  inspect(): void
-  t: typeof t
-  sessionId: string
-  useSession(selector: (snapshot: { pending: unknown[] }) => unknown): unknown
-}>
-
-const useEmptySession = (selector: (snapshot: { pending: unknown[] }) => unknown): unknown => (
-  selector({ pending: [] })
-)
 
 function completedVisualV4Block(visual: LearningVisualV4, callId: string) {
   return {
@@ -96,19 +82,21 @@ function runningCheckpointHarness(checkpoint = checkpointFixture(), ids: {
   const callId = ids.callId ?? 'call_checkpoint'
   const waitId = ids.waitId ?? 'wait_checkpoint'
   const checkpointId = ids.checkpointId ?? 'checkpoint_one'
-  const respond = vi.fn().mockResolvedValue({ accepted: true })
-  const pending = {
+  // The question plugin's PendingQuestion carrier, as the composer seat
+  // claims it: `answer` resolves the Host waterfall with one answer batch.
+  const respond = vi.fn<(answer: { answers: LearningQuestionAnswerItem[] }) => Promise<void>>()
+    .mockResolvedValue(undefined)
+  const pending: LearningQuestionWait = {
     kind: 'question',
     key: `question_${waitId}`,
     sessionId,
-    payload: {
-      questions: [{
-        id: learningCheckpointQuestionId(waitId),
-        question: checkpoint.prompt,
-        detail: encodeLearningCheckpointDetail({ sessionId, callId, waitId, checkpointId, checkpoint }),
-      }],
-    },
-    respond,
+    questions: [{
+      id: learningCheckpointQuestionId(waitId),
+      question: checkpoint.prompt,
+      detail: encodeLearningCheckpointDetail({ sessionId, callId, waitId, checkpointId, checkpoint }),
+    }],
+    answer: respond,
+    dismiss: vi.fn<() => Promise<void>>().mockResolvedValue(undefined),
   }
   return {
     sessionId,
@@ -117,16 +105,7 @@ function runningCheckpointHarness(checkpoint = checkpointFixture(), ids: {
     checkpointId,
     respond,
     pending,
-    block: {
-      seq: 1,
-      time: 1_000,
-      callId,
-      name: 'learning_checkpoint',
-      argsRaw: JSON.stringify(checkpoint),
-    },
-    usePendingSession: (selector: (snapshot: { pending: unknown[] }) => unknown): unknown => (
-      selector({ pending: [pending] })
-    ),
+    block: startedBlock(callId, 'learning_checkpoint', JSON.stringify(checkpoint)),
   }
 }
 
@@ -155,10 +134,8 @@ function completedCheckpointBlock(
 }
 
 function customResponseOf(respond: ReturnType<typeof vi.fn>, call = 0): unknown {
-  const request = respond.mock.calls[call]?.[0] as {
-    value?: { answer?: { answers?: Array<{ custom?: string }> } }
-  } | undefined
-  const custom = request?.value?.answer?.answers?.[0]?.custom
+  const request = respond.mock.calls[call]?.[0] as { answers?: Array<{ custom?: string }> } | undefined
+  const custom = request?.answers?.[0]?.custom
   return custom === undefined ? undefined : JSON.parse(custom)
 }
 
@@ -258,13 +235,7 @@ describe('learning_visual tool-call replay', () => {
     const events: Array<{ name: string; sessionId?: string; callId?: string; cardId?: string; status?: string }> = []
     const unsubscribe = subscribeLearningUiLifecycle(event => events.push(event))
     render(
-      <ToolView
-        block={completedVisualV4Block(visual, 'call_recall_bridge')}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_recall_bridge"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(completedVisualV4Block(visual, 'call_recall_bridge'), { sessionId: 'session_recall_bridge' })} />,
     )
     fireEvent.click(screen.getByRole('button', { name: en.visualShowHint }))
     expect(events.filter(event => event.name === 'learning.recall.rated')).toHaveLength(0)
@@ -285,28 +256,20 @@ describe('learning_visual tool-call replay', () => {
   it('shows a neutral running state only until arguments form a valid visual', () => {
     const events: string[] = []
     const unsubscribe = subscribeLearningUiLifecycle(event => events.push(event.name))
-    const block = {
-      seq: 1,
-      time: 1_000,
-      callId: 'visual-running',
-      name: 'learning_visual',
-      argsRaw: '{"protocol":"dsh-learning/visual@3","kind":"parameter_chart","title":"Logistic',
-    }
+    const block = preparingBlock(
+      'visual-running',
+      'learning_visual',
+      '{"protocol":"dsh-learning/visual@3","kind":"parameter_chart","title":"Logistic',
+    )
     const view = render(
-      <ToolView block={block} inspect={() => {}} t={t} sessionId="s1" useSession={useEmptySession} />,
+      <ToolView {...toolViewProps(block, { sessionId: 's1' })} />,
     )
     expect(screen.getByRole('status').textContent).toContain('Preparing')
     expect(screen.queryByText(/could not be displayed safely/)).toBeNull()
     expect(events).toEqual(['learning.call.stream_started'])
 
     view.rerender(
-      <ToolView
-        block={{ ...block, argsRaw: JSON.stringify(logisticVisual()) }}
-        inspect={() => {}}
-        t={t}
-        sessionId="s1"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(startedBlock('visual-running', 'learning_visual', JSON.stringify(logisticVisual())), { sessionId: 's1' })} />,
     )
     expect(screen.getByRole('slider', { name: 'Slope' })).toBeTruthy()
     expect(view.container.querySelector('[data-state="running"]')).toBeNull()
@@ -333,14 +296,14 @@ describe('learning_visual tool-call replay', () => {
       subCalls: [],
     }
     const first = render(
-      <ToolView block={block} inspect={() => {}} t={t} sessionId="s1" useSession={useEmptySession} />,
+      <ToolView {...toolViewProps(block, { sessionId: 's1' })} />,
     )
     fireEvent.change(screen.getByRole('slider', { name: 'Slope' }), { target: { value: '3' } })
     expect(first.container.querySelectorAll('[data-series="observations"] circle')).toHaveLength(2)
     first.unmount()
 
     const replay = render(
-      <ToolView block={block} inspect={() => {}} t={t} sessionId="s1" useSession={useEmptySession} />,
+      <ToolView {...toolViewProps(block, { sessionId: 's1' })} />,
     )
     expect((screen.getByRole('slider', { name: 'Slope' }) as HTMLInputElement).value).toBe('3')
     expect(screen.getByText('Decision boundary').parentElement?.textContent).toContain('1.7 h')
@@ -358,13 +321,7 @@ describe('semantic LearningVisual v4 completed ToolView gallery', () => {
   it.each(entries)('parses and renders %s natively without Markdown downgrade', (name, source) => {
     const visual = parseLearningVisualV4(source)
     const view = render(
-      <ToolView
-        block={completedVisualV4Block(visual, `v4-${name}`)}
-        inspect={() => {}}
-        t={t}
-        sessionId="s-v4"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(completedVisualV4Block(visual, `v4-${name}`), { sessionId: 's-v4' })} />,
     )
     const root = view.container.querySelector(`[data-learning-visual="${visual.content.kind}"]`)
     expect(root, `${name} did not reach its native V4 renderer`).toBeTruthy()
@@ -557,13 +514,13 @@ describe('semantic LearningVisual v4 completed ToolView gallery', () => {
     const visual = parseLearningVisualV4(visualV4Catalog.derivativePlot)
     const block = completedVisualV4Block(visual, 'v4-plot-replay')
     const first = render(
-      <ToolView block={block} inspect={() => {}} t={t} sessionId="s-v4" useSession={useEmptySession} />,
+      <ToolView {...toolViewProps(block, { sessionId: 's-v4' })} />,
     )
     fireEvent.change(screen.getByRole('slider', { name: /^指数 n/ }), { target: { value: '1.5' } })
     first.unmount()
 
     const replay = render(
-      <ToolView block={block} inspect={() => {}} t={t} sessionId="s-v4" useSession={useEmptySession} />,
+      <ToolView {...toolViewProps(block, { sessionId: 's-v4' })} />,
     )
     expect((screen.getByRole('slider', { name: /^指数 n/ }) as HTMLInputElement).value).toBe('1.5')
     expect(replay.container.querySelector('[data-learning-visual="plot"]')).toBeTruthy()
@@ -644,13 +601,7 @@ describe('learning_checkpoint client gate and replay', () => {
   it('restores a same-wait draft after refresh and reuses one receipt across retries', async () => {
     const harness = runningCheckpointHarness()
     const first = render(
-      <ToolView
-        block={harness.block}
-        inspect={() => {}}
-        t={t}
-        sessionId={harness.sessionId}
-        useSession={harness.usePendingSession}
-      />,
+      <ToolView {...toolViewProps(harness.block, { sessionId: harness.sessionId, waits: [harness.pending] })} />,
     )
     const draft = screen.getByRole('textbox', { name: en.checkpointFreeTextLabel }) as HTMLTextAreaElement
     fireEvent.change(draft, { target: { value: 'FIFO preserves insertion order' } })
@@ -658,13 +609,7 @@ describe('learning_checkpoint client gate and replay', () => {
     first.unmount()
 
     const refreshed = render(
-      <ToolView
-        block={harness.block}
-        inspect={() => {}}
-        t={t}
-        sessionId={harness.sessionId}
-        useSession={harness.usePendingSession}
-      />,
+      <ToolView {...toolViewProps(harness.block, { sessionId: harness.sessionId, waits: [harness.pending] })} />,
     )
     expect((screen.getByRole('textbox', { name: en.checkpointFreeTextLabel }) as HTMLTextAreaElement).value)
       .toBe('FIFO preserves insertion order')
@@ -682,13 +627,7 @@ describe('learning_checkpoint client gate and replay', () => {
     refreshed.unmount()
 
     render(
-      <ToolView
-        block={harness.block}
-        inspect={() => {}}
-        t={t}
-        sessionId={harness.sessionId}
-        useSession={harness.usePendingSession}
-      />,
+      <ToolView {...toolViewProps(harness.block, { sessionId: harness.sessionId, waits: [harness.pending] })} />,
     )
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Retry contribution' } })
     fireEvent.click(screen.getByRole('button', { name: en.submit }))
@@ -711,13 +650,7 @@ describe('learning_checkpoint client gate and replay', () => {
       protocol: source.protocol,
     })
     const view = render(
-      <ToolView
-        block={{ ...harness.block, argsRaw }}
-        inspect={() => {}}
-        t={t}
-        sessionId={harness.sessionId}
-        useSession={harness.usePendingSession}
-      />,
+      <ToolView {...toolViewProps(startedBlock(harness.callId, 'learning_checkpoint', argsRaw), { sessionId: harness.sessionId, waits: [harness.pending] })} />,
     )
     expect(view.container.querySelector('[data-learning-checkpoint]')).toBeTruthy()
     expect(view.container.querySelector('[data-state="running"]')).toBeNull()
@@ -725,19 +658,13 @@ describe('learning_checkpoint client gate and replay', () => {
 
   it('coalesces double click and repeated Ctrl+Enter into one terminal response under StrictMode', async () => {
     const harness = runningCheckpointHarness()
-    let resolveResponse: ((value: { accepted: true }) => void) | undefined
-    harness.respond.mockReset().mockImplementation(() => new Promise(resolve => {
+    let resolveResponse: (() => void) | undefined
+    harness.respond.mockReset().mockImplementation(() => new Promise<void>(resolve => {
       resolveResponse = resolve
     }))
     render(
       <StrictMode>
-        <ToolView
-          block={harness.block}
-          inspect={() => {}}
-          t={t}
-          sessionId={harness.sessionId}
-          useSession={harness.usePendingSession}
-        />
+        <ToolView {...toolViewProps(harness.block, { sessionId: harness.sessionId, waits: [harness.pending] })} />
       </StrictMode>,
     )
     const input = screen.getByRole('textbox')
@@ -747,7 +674,7 @@ describe('learning_checkpoint client gate and replay', () => {
     fireEvent.doubleClick(screen.getByRole('button', { name: en.submit }))
 
     await waitFor(() => expect(harness.respond).toHaveBeenCalledTimes(1))
-    resolveResponse?.({ accepted: true })
+    resolveResponse?.()
     await waitFor(() => expect(sessionStorage.getItem(`dsh-learning/checkpoint@1:${harness.waitId}`)).toBeNull())
     expect(customResponseOf(harness.respond)).toMatchObject({
       status: 'submitted',
@@ -761,13 +688,7 @@ describe('learning_checkpoint client gate and replay', () => {
   ] as const)('sends a closed %s result and clears its draft', async (status, buttonName) => {
     const harness = runningCheckpointHarness()
     render(
-      <ToolView
-        block={harness.block}
-        inspect={() => {}}
-        t={t}
-        sessionId={harness.sessionId}
-        useSession={harness.usePendingSession}
-      />,
+      <ToolView {...toolViewProps(harness.block, { sessionId: harness.sessionId, waits: [harness.pending] })} />,
     )
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'unsent draft' } })
     fireEvent.click(screen.getByRole('button', { name: buttonName }))
@@ -784,15 +705,9 @@ describe('learning_checkpoint client gate and replay', () => {
 
   it('keeps the draft and exposes a retryable alert when the wait response fails', async () => {
     const harness = runningCheckpointHarness()
-    harness.respond.mockReset().mockResolvedValue({ accepted: false, reason: 'connection lost' })
+    harness.respond.mockReset().mockRejectedValue(new Error('connection lost'))
     render(
-      <ToolView
-        block={harness.block}
-        inspect={() => {}}
-        t={t}
-        sessionId={harness.sessionId}
-        useSession={harness.usePendingSession}
-      />,
+      <ToolView {...toolViewProps(harness.block, { sessionId: harness.sessionId, waits: [harness.pending] })} />,
     )
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'retain this answer' } })
     fireEvent.click(screen.getByRole('button', { name: en.submit }))
@@ -817,7 +732,7 @@ describe('learning_checkpoint client gate and replay', () => {
       ...extra,
     })
     const view = render(
-      <ToolView block={block} inspect={() => {}} t={t} sessionId="session_checkpoint" useSession={useEmptySession} />,
+      <ToolView {...toolViewProps(block, { sessionId: 'session_checkpoint' })} />,
     )
 
     expect(view.container.querySelector(`[data-learning-result="${status}"]`)?.textContent).toContain(expectedLabel)
@@ -836,13 +751,7 @@ describe('learning_checkpoint client gate and replay', () => {
       status: 'skipped',
     }
     const failed = render(
-      <ToolView
-        block={completedCheckpointBlock(checkpoint, validResult, { isError: true })}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_checkpoint"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(completedCheckpointBlock(checkpoint, validResult, { isError: true }), { sessionId: 'session_checkpoint' })} />,
     )
     expect(screen.getByRole('alert').textContent).toContain(en.invalidResult)
     expect(failed.container.textContent).toContain(checkpoint.fallbackMarkdown)
@@ -851,13 +760,7 @@ describe('learning_checkpoint client gate and replay', () => {
 
     const malformedRaw = JSON.stringify({ ...checkpoint, answer: 'hidden model answer' })
     const malformed = render(
-      <ToolView
-        block={completedCheckpointBlock(checkpoint, validResult, { argsRaw: malformedRaw })}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_checkpoint"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(completedCheckpointBlock(checkpoint, validResult, { argsRaw: malformedRaw }), { sessionId: 'session_checkpoint' })} />,
     )
     expect(screen.getByRole('alert').textContent).toContain(en.invalidActivity)
     expect(malformed.container.textContent).toContain(checkpoint.fallbackMarkdown)
@@ -883,13 +786,7 @@ describe('learning_checkpoint client gate and replay', () => {
       status: 'skipped',
     }
     const view = render(
-      <ToolView
-        block={completedCheckpointBlock(checkpoint, result, { argsRaw })}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_checkpoint"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(completedCheckpointBlock(checkpoint, result, { argsRaw }), { sessionId: 'session_checkpoint' })} />,
     )
 
     expect(view.container.textContent).not.toContain(unsafe)
@@ -898,6 +795,53 @@ describe('learning_checkpoint client gate and replay', () => {
     } else {
       expect(view.container.textContent).toContain(expectedFallback)
     }
+  })
+})
+
+describe('learning composer seat (0.2 pending-interaction bridge)', () => {
+  type ChainOwner = Parameters<typeof selectLearningActivity>[0]
+  const owner = (pendingInteraction: unknown, sessionId: string | undefined): ChainOwner => (
+    { pendingInteraction, sessionId, session: undefined } as unknown as ChainOwner
+  )
+
+  it('claims only the package-owned question carrier of the current Session', () => {
+    const harness = runningCheckpointHarness()
+    expect(selectLearningActivity(owner(harness.pending, harness.sessionId))).toBe(harness.pending)
+    // A fork must not claim an ancestor's unresolved interaction.
+    expect(selectLearningActivity(owner(harness.pending, 'session_fork'))).toBeNull()
+    expect(selectLearningActivity(owner(harness.pending, undefined))).toBeNull()
+    expect(selectLearningActivity(owner(undefined, harness.sessionId))).toBeNull()
+    // A generic ask_user_question stays with the question composer.
+    const foreign = {
+      ...harness.pending,
+      key: 'question_foreign',
+      questions: [{ id: 'q1', question: 'Pick a colour' }],
+    }
+    expect(selectLearningActivity(owner(foreign, harness.sessionId))).toBeNull()
+    // Another pending-interaction domain (for example an approval) declines.
+    expect(selectLearningActivity(owner({ ...harness.pending, kind: 'approval' }, harness.sessionId))).toBeNull()
+  })
+
+  it('publishes the claimed carrier to the inline tool view while the seat holds it', async () => {
+    const harness = runningCheckpointHarness()
+    const store = createLearningWaitStore()
+    const seat = render(<LearningComposer matched={harness.pending} t={t} publishLearningWait={store.publish} />)
+    expect(seat.container.innerHTML).toBe('')
+    expect(store.getSnapshot()).toEqual([harness.pending])
+
+    const view = render(
+      <ToolView {...toolViewProps(harness.block, { sessionId: harness.sessionId, waits: store.getSnapshot() })} />,
+    )
+    expect(view.container.querySelector('[data-learning-checkpoint]')).toBeTruthy()
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'answer through the carrier' } })
+    fireEvent.click(screen.getByRole('button', { name: en.submit }))
+    await waitFor(() => expect(harness.respond).toHaveBeenCalledTimes(1))
+    expect(harness.respond.mock.calls[0]?.[0]).toMatchObject({
+      answers: [{ id: harness.pending.questions[0]?.id, selected: [] }],
+    })
+
+    seat.unmount()
+    expect(store.getSnapshot()).toEqual([])
   })
 })
 
@@ -936,7 +880,7 @@ describe('retired V2 result replay', () => {
     }
     const { block } = completedQuestionBlock(JSON.stringify(response))
     const view = render(
-      <ToolView block={block} inspect={() => {}} t={t} sessionId="s1" useSession={useEmptySession} />,
+      <ToolView {...toolViewProps(block, { sessionId: 's1' })} />,
     )
 
     expect(view.container.querySelector('[data-learning-result="submit"]')?.textContent).toContain('Response submitted')
@@ -948,7 +892,7 @@ describe('retired V2 result replay', () => {
 
   it('shows a clear error and Markdown fallback when a historical result is corrupt', () => {
     const { activity, block } = completedQuestionBlock('{not-json')
-    render(<ToolView block={block} inspect={() => {}} t={t} sessionId="s1" useSession={useEmptySession} />)
+    render(<ToolView {...toolViewProps(block, { sessionId: 's1' })} />)
 
     expect(screen.getByRole('alert').textContent).toContain('result could not be restored')
     expect(document.body.textContent).toContain(activity.fallbackMarkdown)

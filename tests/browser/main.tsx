@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import { LearningToolView } from '../../src/client/LearningToolView.tsx'
-import { en } from '../../src/client/locales.ts'
+import type { LearningQuestionWait } from '../../src/client/learning-waits.ts'
 import {
   CHECKPOINT_PROTOCOL,
   CHECKPOINT_RESULT_PROTOCOL,
@@ -24,6 +22,7 @@ import {
 import { encodeLearningCheckpointDetail, learningCheckpointQuestionId } from '../../src/transport.ts'
 import { compareActivity, parameterActivity, processActivity, visualV4Catalog } from '../fixtures.ts'
 import { DECISION_TREE_VISUAL } from '../visual-corpus.ts'
+import { startedBlock, t, ToolView, toolViewProps } from '../toolview-harness.tsx'
 import './page.css'
 
 const SESSION_ID = 'learning-browser-visual-gallery'
@@ -62,13 +61,7 @@ function checkpointIdentity(sessionKey: CheckpointSessionKey) {
 }
 
 function runningCheckpointBlock(callId: string, checkpoint: LearningCheckpointV1) {
-  return {
-    seq: 1,
-    time: 1_000,
-    callId,
-    name: 'learning_checkpoint',
-    argsRaw: JSON.stringify(checkpoint),
-  }
+  return startedBlock(callId, 'learning_checkpoint', JSON.stringify(checkpoint))
 }
 
 function completedCheckpointBlock(
@@ -91,13 +84,6 @@ function completedCheckpointBlock(
   }
 }
 
-const t = ((key: keyof typeof en, params?: Record<string, string | number>) => {
-  let value: string = en[key]
-  for (const [name, replacement] of Object.entries(params ?? {})) {
-    value = value.replace(`{${name}}`, String(replacement))
-  }
-  return value
-}) as TranslateNS<'interactive-learning'>
 
 function logitExpression(): MathExpressionV1 {
   return {
@@ -181,16 +167,7 @@ const logisticVisual: LearningVisualV3 = {
 }
 
 function runningVisualBlock() {
-  return {
-    callId: VISUAL_CALL_ID,
-    name: 'learning_visual',
-    argsRaw: JSON.stringify(logisticVisual),
-    turn: 1,
-    step: 1,
-    time: 2_000,
-    callView: null,
-    subCalls: [],
-  }
+  return startedBlock(VISUAL_CALL_ID, 'learning_visual', JSON.stringify(logisticVisual))
 }
 
 function completedVisualBlock() {
@@ -281,25 +258,8 @@ function legacyReplayBlock(kind: LegacyKind, activity: LearningActivityV1) {
   }
 }
 
-type BrowserToolBlock =
-  | ReturnType<typeof runningVisualBlock>
-  | ReturnType<typeof completedVisualBlock>
-  | ReturnType<typeof completedV4VisualBlock>
-  | ReturnType<typeof runningCheckpointBlock>
-  | ReturnType<typeof completedCheckpointBlock>
-  | ReturnType<typeof legacyReplayBlock>
-
-const ToolView = LearningToolView as unknown as ComponentType<{
-  block: BrowserToolBlock
-  inspect(): void
-  t: typeof t
-  sessionId: string
-  useSession(selector: (snapshot: { pending: unknown[] }) => unknown): unknown
-}>
-
 /** Visual fixtures never claim the ordinary composer as a pending interaction. */
-const useEmptySession = (selector: (snapshot: { pending: unknown[] }) => unknown): unknown =>
-  selector({ pending: [] })
+const NO_WAITS: readonly LearningQuestionWait[] = []
 
 type VisualCatalogKey = keyof typeof visualV4Catalog
 type FixtureView = 'v4-gallery' | 'v3-running' | 'v3-completed' | 'checkpoint' | 'legacy-replay'
@@ -402,12 +362,8 @@ function sameReadiness(left: FixtureReadiness, right: FixtureReadiness): boolean
     && left.hasNativeContent === right.hasNativeContent
 }
 
-function checkpointResultFromRequest(request: unknown): LearningCheckpointResultV1 | undefined {
+function checkpointResultFromRequest(answer: unknown): LearningCheckpointResultV1 | undefined {
   try {
-    if (typeof request !== 'object' || request === null || !('value' in request)) return undefined
-    const value = request.value
-    if (typeof value !== 'object' || value === null || !('answer' in value)) return undefined
-    const answer = value.answer
     if (typeof answer !== 'object' || answer === null || !('answers' in answer)) return undefined
     const answers = answer.answers
     if (!Array.isArray(answers) || typeof answers[0]?.custom !== 'string') return undefined
@@ -435,29 +391,30 @@ function BrowserAcceptance() {
   const legacyActivity = legacyActivities[legacyKind]()
   const checkpoint = useMemo(() => checkpointFixture(checkpointKind), [checkpointKind])
   const checkpointIds = checkpointIdentity(checkpointSession)
-  const respondToCheckpoint = useCallback(async (request: unknown) => {
-    const result = checkpointResultFromRequest(request)
-    if (result === undefined) return { accepted: false, reason: 'malformed checkpoint receipt' }
+  // Stand-in for the question plugin's PendingQuestion carrier: `answer`
+  // resolves the Host waterfall with one answer batch, or rejects.
+  const respondToCheckpoint = useCallback(async (answer: unknown): Promise<void> => {
+    const result = checkpointResultFromRequest(answer)
+    if (result === undefined) throw new Error('malformed checkpoint receipt')
     setCheckpointRespondCount(count => count + 1)
     setCheckpointResult(result)
-    return { accepted: true }
   }, [])
-  const pendingCheckpoint = useMemo(() => ({
+  const pendingCheckpoint = useMemo((): LearningQuestionWait => ({
     kind: 'question',
     key: `question_${checkpointIds.waitId}`,
     sessionId: checkpointIds.sessionId,
-    payload: {
-      questions: [{
-        id: learningCheckpointQuestionId(checkpointIds.waitId),
-        question: checkpoint.prompt,
-        detail: encodeLearningCheckpointDetail({ ...checkpointIds, checkpoint }),
-      }],
-    },
-    respond: respondToCheckpoint,
+    questions: [{
+      id: learningCheckpointQuestionId(checkpointIds.waitId),
+      question: checkpoint.prompt,
+      detail: encodeLearningCheckpointDetail({ ...checkpointIds, checkpoint }),
+    }],
+    answer: respondToCheckpoint,
+    dismiss: async () => {},
   }), [checkpoint, checkpointIds.callId, checkpointIds.checkpointId, checkpointIds.sessionId, checkpointIds.waitId, respondToCheckpoint])
-  const useCheckpointSession = useCallback((selector: (snapshot: { pending: unknown[] }) => unknown): unknown => (
-    selector({ pending: checkpointResult === null ? [pendingCheckpoint] : [] })
-  ), [checkpointResult, pendingCheckpoint])
+  const checkpointWaits = useMemo(
+    () => (checkpointResult === null ? [pendingCheckpoint] : NO_WAITS),
+    [checkpointResult, pendingCheckpoint],
+  )
   const expectedKind = mode !== 'learning'
     ? null
     : view === 'v4-gallery'
@@ -688,11 +645,7 @@ function BrowserAcceptance() {
             <div data-testid="v4-completed-tool-view" data-visual-key={visualKey}>
               <ToolView
                 key={visualKey}
-                block={completedV4VisualBlock(visualKey, selectedVisual)}
-                inspect={() => {}}
-                t={t}
-                sessionId={SESSION_ID}
-                useSession={useEmptySession}
+                {...toolViewProps(completedV4VisualBlock(visualKey, selectedVisual), { sessionId: SESSION_ID, waits: NO_WAITS })}
               />
             </div>
             <p className="continuation" data-testid="same-turn-continuation">
@@ -724,13 +677,10 @@ function BrowserAcceptance() {
             <div data-testid="checkpoint-tool-view">
               <ToolView
                 key={`${checkpointSession}:${checkpointKind}:${String(checkpointMountEpoch)}:${checkpointResult?.status ?? 'pending'}`}
-                block={checkpointResult === null
+                {...toolViewProps(checkpointResult === null
                   ? runningCheckpointBlock(checkpointIds.callId, checkpoint)
-                  : completedCheckpointBlock(checkpointIds.callId, checkpoint, checkpointResult)}
-                inspect={() => {}}
-                t={t}
-                sessionId={checkpointIds.sessionId}
-                useSession={useCheckpointSession}
+                  : completedCheckpointBlock(checkpointIds.callId, checkpoint, checkpointResult),
+                { sessionId: checkpointIds.sessionId, waits: checkpointWaits })}
               />
             </div>
             <p className="continuation" data-testid="checkpoint-continuation">
@@ -747,13 +697,7 @@ function BrowserAcceptance() {
                 </button>
               ))}
             </div>
-            <ToolView
-              block={legacyReplayBlock(legacyKind, legacyActivity)}
-              inspect={() => {}}
-              t={t}
-              sessionId={SESSION_ID}
-              useSession={useEmptySession}
-            />
+            <ToolView {...toolViewProps(legacyReplayBlock(legacyKind, legacyActivity), { sessionId: SESSION_ID, waits: NO_WAITS })} />
           </article>
         ) : (
           <article ref={fixtureRef} className="assistant-turn" data-testid={view === 'v3-running' ? 'v3-running-tool-view' : 'v3-completed-tool-view'}>
@@ -762,13 +706,7 @@ function BrowserAcceptance() {
             <div className="tool-state" data-state={view === 'v3-running' ? 'running' : 'completed'}>
               ToolView: {view === 'v3-running' ? 'running call' : 'completed result'} · pending=[]
             </div>
-            <ToolView
-              block={view === 'v3-running' ? runningVisualBlock() : completedVisualBlock()}
-              inspect={() => {}}
-              t={t}
-              sessionId={SESSION_ID}
-              useSession={useEmptySession}
-            />
+            <ToolView {...toolViewProps(view === 'v3-running' ? runningVisualBlock() : completedVisualBlock(), { sessionId: SESSION_ID, waits: NO_WAITS })} />
             <p className="continuation" data-testid="same-turn-continuation">
               关键点：不论参数怎样变化，蓝色曲线始终位于 0 到 1 之间；P = 0.5 所在的 x 就是当前决策边界。你觉得增大 β₁ 会让边界附近的曲线更陡还是更平？
             </p>

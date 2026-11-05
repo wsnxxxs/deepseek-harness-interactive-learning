@@ -2,18 +2,20 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore, {
   KNOWN_SESSION_EVENT_TYPES,
   SessionId,
   type SessionEvent,
 } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+// 0.2 JSONL persistence is a namespace plugin (named `name`/`Config`/`apply`).
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { afterEach, describe, expect, it } from 'vitest'
+import { executeTool, mountAgentRegistry, nativeToolExecutor } from './host-harness.ts'
 
 const temporaryRoots: string[] = []
 
@@ -28,7 +30,6 @@ async function mountPersistence(root: string): Promise<Context> {
   await ctx.plugin(JsonlSessionPersistence, {
     root,
     compression: 'none',
-    writeBatchMaxDelayMs: 1,
   })
   return ctx
 }
@@ -38,9 +39,10 @@ async function mountLearningServices(ctx: Context): Promise<void> {
     import('../src/broker.ts'),
     import('../src/agent.ts'),
   ])
-  await ctx.plugin(AgentRegistry)
+  await mountAgentRegistry(ctx)
   await ctx.plugin(UserQuestionService)
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(nativeToolExecutor)
   await ctx.plugin(SystemPrompt)
   await ctx.plugin(LearningActivityBroker)
   await ctx.plugin(learningAgent)
@@ -69,17 +71,24 @@ describe('Learning state durable load order', () => {
 
     const first = await mountPersistence(root)
     await mountLearningServices(first)
-    const originalSession = first.sessions.create(sessionId)
+    // 0.2 persistence routes live events only to a Session with an active
+    // write handle: take ownership before publication, as AgentLoop does.
+    const originalSession = first.sessions.prepare(sessionId, {})
+    const writeHandle = await first.sessionPersistence.create(originalSession.header, {
+      inheritedEventCount: originalSession.inheritedEventCount,
+    })
+    const detachOriginalSession = first.sessions.enter(originalSession)
+    first.sessions.announce(originalSession)
     const originalAgent = agentFor(originalSession)
     const disposeOriginalAgent = first.agents.register(originalAgent)
+    await disposeOriginalAgent
     originalSession.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'I want to understand queue invariants.' }],
       source: { kind: 'user' },
     }), { surfaceOp: 'append' })
 
-    const update = await first.tools.execute({
-      signal: new AbortController().signal,
-      callId: CallId('durable-state-update'),
+    const update = await executeTool(first, {
+      callId: 'durable-state-update',
       name: 'learning_state_update',
       arguments: {
         action: 'update',
@@ -96,12 +105,14 @@ describe('Learning state durable load order', () => {
       agent: originalAgent,
     })
     expect(update).toMatchObject({ isError: false, value: { status: 'updated', revision: 1 } })
-    expect(originalSession.events.at(-1)).toMatchObject({
+    expect(originalSession.snapshotEvents().at(-1)).toMatchObject({
       type: 'learning/state',
       data: { snapshot: { goal: 'Understand queue invariants', revision: 1 } },
     })
     await first.sessions.flush(originalSession)
-    disposeOriginalAgent()
+    await disposeOriginalAgent()
+    detachOriginalSession()
+    await writeHandle.close()
     await first.fiber.dispose()
 
     // Simulate the next process's empty downstream registration, then exercise
@@ -112,19 +123,24 @@ describe('Learning state durable load order', () => {
     await import('../src/preset.ts?durable-reboot-preboot')
     expect(known.has('learning/state')).toBe(true)
     const second = await mountPersistence(root)
-    const loaded = await second.sessionPersistence.load(sessionId)
+    // 0.2 reads stored logs through a handle (`load()` was removed).
+    const readHandle = await second.sessionPersistence.open(sessionId, 'read')
+    const loaded = await readHandle.read()
     expect(loaded.events.some(event => event.type === 'learning/state')).toBe(true)
     const restoredSession = second.sessions.prepare(sessionId, {
       seed: structuredClone(loaded.events) as SessionEvent[],
-      meta: structuredClone(loaded.meta),
-      seedSource: 'persistence',
+      meta: structuredClone(readHandle.header),
+      inheritedEventCount: readHandle.inheritedEventCount,
+      eventState: 'detached',
     })
+    await readHandle.close()
     const detachSession = second.sessions.enter(restoredSession)
     second.sessions.announce(restoredSession)
 
     await mountLearningServices(second)
     const restoredAgent = agentFor(restoredSession)
     const disposeRestoredAgent = second.agents.register(restoredAgent)
+    await disposeRestoredAgent
     expect(second.learningActivities.learnerState(restoredAgent)).toMatchObject({
       revision: 1,
       goal: 'Understand queue invariants',
@@ -133,7 +149,7 @@ describe('Learning state durable load order', () => {
     expect(assembly.contexts.find(item => item.name === 'learning:learner-state')?.text)
       .toContain('goal: "Understand queue invariants"')
 
-    disposeRestoredAgent()
+    await disposeRestoredAgent()
     detachSession()
     await second.fiber.dispose()
   }, 30_000)

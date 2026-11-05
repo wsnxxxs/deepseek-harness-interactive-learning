@@ -938,12 +938,25 @@ function textFromUserMessage(message: UserMessage): string {
     .trim()
 }
 
-function routeContextText(decision: LearningTurnRouteDecision): string {
+const ROUTED_LEARNING_TOOLS = ['learning_state_update', 'learning_visual_select', 'learning_checkpoint_select'] as const
+
+/** Route-dependent tool availability, stated in context because the catalog itself stays stable. */
+function learningToolAvailabilityText(decision: LearningTurnRouteDecision, richClientAvailable: boolean): string {
+  const usable = ROUTED_LEARNING_TOOLS.filter(name => learningToolAvailable(decision, name, richClientAvailable))
+  const unavailable = ROUTED_LEARNING_TOOLS.filter(name => !usable.includes(name))
+  return [
+    `Learning tools usable this turn: ${usable.join(', ') || 'none'}.`,
+    ...(unavailable.length === 0 ? [] : [`Unavailable this turn (calls are denied): ${unavailable.join(', ')}.`]),
+  ].join(' ')
+}
+
+function routeContextText(decision: LearningTurnRouteDecision, richClientAvailable = true): string {
   if (decision.intent.intent === 'not-learn') {
     return [
       '## Current turn route',
       'intent=not-learn; route=direct.',
       'Treat this as an ordinary task. Do not calibrate, teach, update learner state, or use learning visual/checkpoint tools for this turn.',
+      'Learning tools are unavailable this turn (calls are denied).',
     ].join('\n')
   }
   return [
@@ -964,6 +977,7 @@ function routeContextText(decision: LearningTurnRouteDecision): string {
           : decision.route === 'direct'
             ? 'Fulfil the requested resource or immediate help directly; do not add a ritual teaching gate.'
             : 'Use the newest learner evidence, change the move when the prior one failed, and stop if the segment is complete.',
+    learningToolAvailabilityText(decision, richClientAvailable),
   ].join('\n')
 }
 
@@ -1167,32 +1181,64 @@ function dynamicToolKey(_services: LearningAgentContext, exec: ToolRunContext): 
     : GLOBAL_DYNAMIC_TOOL_KEY
 }
 
+interface LoggedToolCall {
+  readonly turn: number
+  readonly step: number
+  readonly callId: string
+  readonly name: string
+}
+
+/**
+ * Read the tool calls this Session attributes to model steps. The executor
+ * logs `tool/call` lazily as each call starts, so later siblings of an
+ * exclusive call are not logged yet; the committed `assistant/message` of the
+ * step carries the complete set of tool-call blocks the model emitted.
+ */
+function loggedToolCalls(agent: Agent): LoggedToolCall[] {
+  const calls: LoggedToolCall[] = []
+  // `snapshotEvents()` is the synchronous 0.2 log reader (`Session.events` was
+  // removed); a session-projection unit would avoid the full snapshot.
+  for (const event of agent.session.snapshotEvents()) {
+    if (event.type === 'tool/call') {
+      calls.push({
+        turn: event.data.turn,
+        step: event.data.step,
+        callId: String(event.data.callId),
+        name: event.data.name,
+      })
+    } else if (event.type === 'assistant/message') {
+      for (const block of event.data.message.content) {
+        if (block.type !== 'tool-call') continue
+        calls.push({ turn: event.data.turn, step: event.data.step, callId: String(block.id), name: block.name })
+      }
+    }
+  }
+  return calls
+}
+
 function assertSingleCheckpointInModelStep(exec: ToolRunContext): void {
   const agent = exec.agent
   if (agent === undefined) {
     throw new LearningProtocolError(['learning_checkpoint requires a live agent session'])
   }
-  const calls = agent.session.events.filter(event => event.type === 'tool/call')
-  const ownCalls = calls.filter(event => event.data.callId === exec.callId)
+  const calls = loggedToolCalls(agent)
+  const ownCalls = calls.filter(call => call.callId === String(exec.callId))
   if (ownCalls.length === 0) {
     throw new LearningProtocolError(['learning_checkpoint callId is absent from the session tool/call log'])
   }
-  const locations = new Set(ownCalls.map(event => `${String(event.data.turn)}:${String(event.data.step)}`))
-  if (locations.size !== 1 || ownCalls.some(event => event.data.name !== 'learning_checkpoint')) {
+  const locations = new Set(ownCalls.map(call => `${String(call.turn)}:${String(call.step)}`))
+  if (locations.size !== 1 || ownCalls.some(call => call.name !== 'learning_checkpoint')) {
     throw new LearningProtocolError(['learning_checkpoint callId does not identify one checkpoint model step'])
   }
   const own = ownCalls[ownCalls.length - 1]!
-  const checkpointCallIds = new Set(calls
-    .filter(event => event.data.turn === own.data.turn
-      && event.data.step === own.data.step
-      && event.data.name === 'learning_checkpoint')
-    .map(event => String(event.data.callId)))
+  const sameStep = calls.filter(call => call.turn === own.turn && call.step === own.step)
+  const checkpointCallIds = new Set(sameStep
+    .filter(call => call.name === 'learning_checkpoint')
+    .map(call => call.callId))
   if (checkpointCallIds.size > 1) {
     throw new LearningProtocolError(['a model step may contain at most one learning_checkpoint call'])
   }
-  if (calls.some(event => event.data.turn === own.data.turn
-    && event.data.step === own.data.step
-    && event.data.name !== 'learning_checkpoint')) {
+  if (sameStep.some(call => call.name !== 'learning_checkpoint')) {
     throw new LearningProtocolError(['learning_checkpoint must be the only tool call in its model step'])
   }
 }
@@ -1208,9 +1254,11 @@ export function apply(ctx: Context): void {
   const services = ctx as LearningAgentContext
 
   // The route is resolved at the exact boundary where the claimed user input
-  // is known and just before the loop assembles the next model request. A
-  // pre-step listener is too late to change the system prompt, and rejecting
-  // a non-learning turn would incorrectly close it as `blocked`.
+  // is known. The 0.2 loop claims the inbox before it resolves the step's tool
+  // set and assembles the prompt, so the dispatch gate and the prompt
+  // listeners below observe this turn's decision. A pre-step listener is too
+  // late to change the step, and rejecting a non-learning turn would
+  // incorrectly close it as `blocked`.
   ctx.on('agent/inbox/claimed', ({ agent, message }) => {
     if (message.source.kind !== 'user') return
     // A payload schema belongs only to the selector/model loop that exposed it.
@@ -1230,6 +1278,12 @@ export function apply(ctx: Context): void {
     learningRoutes.set(agent, routeLearningTurn(text, session))
   })
 
+  // The learning tool catalog stays registered and stable across turns: in
+  // 0.2 the `system-prompt/assemble` waterfall no longer carries tools, and
+  // changing declarations per request would invalidate the provider's
+  // request-prefix KV cache. Routing is enforced here, at dispatch, and the
+  // dynamic `learning:turn-route` context tells the model which learning
+  // tools are usable this turn.
   ctx.on('tools/pre-execute', (execution, next) => {
     const agent = execution.agent
     const decision = agent === undefined ? undefined : learningRoutes.get(agent)
@@ -1260,28 +1314,18 @@ export function apply(ctx: Context): void {
   })
 
   // A Learning agent can receive an ordinary task after a teaching turn. Keep
-  // the session and its durable learner state, but make that individual model
-  // request ordinary: remove the learning policy/state and all learning tool
-  // schemas. The registrations remain mounted for a later learning turn.
+  // the session, its durable learner state, the policy section, and the tool
+  // catalog stable (prefix-cache friendly); only drop the dynamic learner-state
+  // context from that individual ordinary request. The turn-route context
+  // already tells the model the turn is ordinary.
   ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
     const agent = context.agent
     const decision = agent === undefined ? undefined : learningRoutes.get(agent)
     const assembly = await next()
-    if (decision?.intent.intent !== 'not-learn') {
-      return {
-        ...assembly,
-        tools: assembly.tools.filter(tool => learningToolAvailable(
-          decision,
-          tool.name,
-          services.learningActivities.richClientAvailable,
-        )),
-      }
-    }
+    if (decision?.intent.intent !== 'not-learn') return assembly
     return {
       ...assembly,
-      sections: assembly.sections.filter(section => section.name !== 'learning:policy'),
       contexts: assembly.contexts.filter(context => context.name !== 'learning:learner-state'),
-      tools: assembly.tools.filter(tool => !tool.name.startsWith(LEARNING_TOOL_PREFIX)),
     }
   })
 
@@ -1489,16 +1533,18 @@ export function apply(ctx: Context): void {
     name: 'learning:turn-route',
     order: 19,
     text: context => {
-      const agent = context.agent ?? services.agent
+      const agent = context.agent
       const decision = agent === undefined ? undefined : learningRoutes.get(agent)
-      return decision === undefined ? '' : routeContextText(decision)
+      return decision === undefined
+        ? ''
+        : routeContextText(decision, services.learningActivities.richClientAvailable)
     },
   })
   services.systemPrompt.context({
     name: 'learning:learner-state',
     order: 20,
     text: context => {
-      const agent = context.agent ?? services.agent
+      const agent = context.agent
       return agent === undefined
         ? ''
         : services.learningActivities.learnerStateTranscript(agent, 300)

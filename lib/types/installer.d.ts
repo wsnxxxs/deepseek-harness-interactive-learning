@@ -22,12 +22,16 @@ export interface LearningInstallManifest {
     files: ManagedFile[];
     preservedFiles: PreservedFile[];
 }
+/** Outcome of the compatibility `install` command on harness >= 0.2. */
 export interface LearningInstallResult {
-    target: string;
-    installed: string[];
-    updated: string[];
-    preserved: string[];
-    staged: string[];
+    /** Bundle package whose `dsh.bundle.patch` declares the preset row. */
+    bundle: typeof LEARNING_BUNDLE_PACKAGE;
+    /** Preset id sessions select (`config.id` of the `preset-learning` row). */
+    presetId: typeof LEARNING_PRESET_ID;
+    /** Plugin-manager command that installs the bundle into a profile. */
+    installCommand: string;
+    /** Retirement of a legacy `$DSH_HOME/.agent-presets/learning` copy. */
+    legacy: LearningUninstallResult;
 }
 export interface LearningUninstallResult {
     target: string;
@@ -37,10 +41,28 @@ export interface LearningUninstallResult {
 }
 export interface LearningInstallerOptions {
     dshHome?: string;
-    source?: string;
 }
-/** Install or safely upgrade the independently owned user preset. */
-export declare function installLearningPreset(options?: LearningInstallerOptions): Promise<LearningInstallResult>;
+/** Package that ships the preset declaration in its bundle patch. */
+export declare const LEARNING_BUNDLE_PACKAGE = "@dsh-portable/interactive-learning";
+/** Stable preset id recorded by sessions that select Learning. */
+export declare const LEARNING_PRESET_ID = "learning";
+/** Legacy (harness < 0.2) user-preset directory that earlier versions wrote. */
+export declare function legacyLearningPresetTarget(dshHome?: string): string;
+/**
+ * Harness >= 0.2 compatibility entry for the former directory installer.
+ *
+ * The 0.2 agent-preset registry reads only `@deepseek-ai/dsh-agent-preset`
+ * declaration rows and no longer scans `$DSH_HOME/.agent-presets/<id>/`
+ * (upstream `packages/preset/agent-preset-registry/README.md`). The Learning
+ * preset is therefore declared by this package's own bundle patch
+ * (`cordis.patch.yml`), which the plugin manager layers into a profile when
+ * the package is installed as a bundle. Copying files into the legacy
+ * directory would create a preset nothing reads, so this function only
+ * retires a legacy copy written by an earlier version (removing files whose
+ * content still matches the package-owned hash and preserving user edits)
+ * and reports how to install the bundle.
+ */
+export declare function installLearningPreset(options?: Pick<LearningInstallerOptions, 'dshHome'>): Promise<LearningInstallResult>;
 /** Uninstall only files whose current content still matches the package-owned hash. */
 export declare function uninstallLearningPreset(options?: Pick<LearningInstallerOptions, 'dshHome'>): Promise<LearningUninstallResult>;
 export {};

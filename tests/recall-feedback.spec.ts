@@ -1,19 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import { LearningActivityBroker } from '../src/broker.ts'
 import {
   RECALL_FEEDBACK_PROTOCOL_V1,
   parseLearningRecallFeedbackV1,
 } from '../src/protocol.ts'
+import { mountAgentRegistry } from './host-harness.ts'
 
 function stubAgent(id: string): Agent {
   const log: Array<{ type: string; seq: number; time: number; data: unknown }> = []
   const session = {
     id,
     header: { delegationDepth: 0 },
-    get events() { return Object.freeze([...log]) },
+    get seq() { return log.length },
+    snapshotEvents() { return Object.freeze([...log]) },
     append(type: string, data: unknown) {
       const event = Object.freeze({ type, seq: log.length, time: Date.now(), data: structuredClone(data) })
       log.push(event)
@@ -25,7 +27,7 @@ function stubAgent(id: string): Agent {
 
 async function setup(): Promise<Context> {
   const ctx = new Context()
-  await ctx.plugin(AgentRegistry)
+  await mountAgentRegistry(ctx)
   await ctx.plugin(UserQuestionService)
   ctx.provide('clientModules', {
     graph: () => ({ rev: 'test', entries: [{ id: '@dsh-portable/interactive-learning', url: '/client.js', rev: 'x' }] }),
@@ -37,7 +39,7 @@ async function setup(): Promise<Context> {
 describe('RecallDeck Host feedback', () => {
   it('accepts the real Connection handler shape and returns an observable result', async () => {
     const ctx = new Context()
-    await ctx.plugin(AgentRegistry)
+    await mountAgentRegistry(ctx)
     await ctx.plugin(UserQuestionService)
     ctx.provide('clientModules', {
       graph: () => ({ rev: 'test', entries: [{ id: '@dsh-portable/interactive-learning', url: '/client.js', rev: 'x' }] }),

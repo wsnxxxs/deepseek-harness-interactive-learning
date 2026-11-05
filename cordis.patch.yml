@@ -1,5 +1,81 @@
-# Mount the Host-side learning activity broker. The model-facing tool is
-# loaded only when the user selects the Learning preset.
+# Bundle patch for `@dsh-portable/interactive-learning` (package.json
+# `dsh.bundle.patch`). Installing the package as a profile bundle with the
+# plugin manager (`dsh plugin add` / `plugin_manager install_bundle`) layers
+# these rows into the profile; nothing has to be copied into `$DSH_HOME`.
+
+# Mount the Host-side learning activity broker. It registers no model-facing
+# tool or prompt; those load only when a session selects the Learning preset.
 - insert:
     - id: interactive-learning
       name: '@dsh-portable/interactive-learning'
+
+# The selectable Learning preset. Since harness 0.2 the agent-preset registry
+# reads only `@deepseek-ai/dsh-agent-preset` declaration rows (it no longer
+# scans `$DSH_HOME/.agent-presets/<id>/`), so the package's own bundle patch
+# declares it. Interactive Learning is deliberately a compact, non-coding
+# preset: the model-visible tools exist only in this preset's scoped layer.
+- insert:
+    - id: preset-learning
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: learning
+        name: 学习模式
+        description: 用自然讲解、原生交互图和连续对话帮助你真正掌握概念；不会默认接管编码或自动化任务。
+        order: 3.5
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are a thoughtful learning partner powered by the {{model}} model. Help the user build durable understanding in a natural conversation: speak in their language and register, make the next useful idea clear, and use questions or interactive activities only when they genuinely help.
+
+          - id: learning-agent
+            name: '@dsh-portable/interactive-learning/agent'
+
+          # Current-topic routes must ground claims in sources; the clock
+          # context lets the model judge what "current" and "recent" mean.
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+
+          # Skills ship inside the installed package; resolve them from the
+          # profile's dependency tree rather than from a preset directory.
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              customSkillDirs:
+                - !!js process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('@dsh-portable/interactive-learning/package.json')), 'preset', 'learning', 'skills')
+
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # Current and contested learning topics need source-grounded answers,
+          # while the preset remains non-coding and does not mount shell or
+          # mutation tools.
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: false
+              searchTimeoutMs: 60000
+
+          # Calibration questions stay in ordinary conversation. The Learning
+          # Agent's answer-free checkpoint is the preset's only deliberate user
+          # wait, so `@deepseek-ai/dsh-tool-ask-user` is intentionally absent.
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024

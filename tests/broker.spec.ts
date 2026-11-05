@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
-import { CallId } from '@deepseek-ai/dsh-llm'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import UserQuestionService, { type AskUserQuestionRequest } from '@deepseek-ai/dsh-user-questions'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -21,8 +20,7 @@ import {
   LEARNER_STATE_SESSION_EVENT_TYPE,
 } from '../src/learner-state.ts'
 import { parameterActivity, visualV4Catalog } from './fixtures.ts'
-
-const testToolSignal = new AbortController().signal
+import { admittedToolNames, executeTool, mountAgentRegistry, nativeToolExecutor, registerAnswerer } from './host-harness.ts'
 
 function stubAgent(id: string, events: readonly unknown[] = []): Agent {
   const agentId = id as Agent['id']
@@ -30,7 +28,8 @@ function stubAgent(id: string, events: readonly unknown[] = []): Agent {
   const session = {
     id: agentId,
     header: { delegationDepth: 0 },
-    get events() { return Object.freeze([...log]) },
+    get seq() { return log.length },
+    snapshotEvents() { return Object.freeze([...log]) },
     append(type: string, data: unknown) {
       const event = Object.freeze({ type, seq: log.length, time: Date.now(), data: structuredClone(data) })
       log.push(event)
@@ -62,14 +61,35 @@ function checkpointCall(callId: string, step = 1): unknown {
   }
 }
 
-function registerRoot(ctx: Context, agent: Agent): void {
-  ctx.agents.register(agent)
+// `agents.register()` returns an awaitable effect disposer in 0.2; the
+// registration and the creation announcement complete asynchronously.
+async function registerRoot(ctx: Context, agent: Agent): Promise<() => Promise<void>> {
+  const dispose = ctx.agents.register(agent)
+  await dispose
+  return async () => { await dispose() }
+}
+
+const ROUTED_LEARNING_TOOLS = ['learning_state_update', 'learning_visual_select', 'learning_checkpoint_select']
+
+/**
+ * The 0.2 migration keeps the learning catalog stable across turns (changing
+ * declarations per request breaks the request-prefix cache). Route-dependent
+ * availability is stated in the turn-route context and enforced at dispatch.
+ * Assert both the stable catalog and the context's usable-tool list.
+ */
+async function routeUsableTools(ctx: Context, agent: Agent): Promise<string[]> {
+  const catalog = await admittedToolNames(ctx, agent)
+  expect(catalog).toEqual(expect.arrayContaining(ROUTED_LEARNING_TOOLS))
+  const assembly = await ctx.systemPrompt.assemble({ scope: agent, agent })
+  const route = assembly.contexts.find(context => context.name === 'learning:turn-route')?.text ?? ''
+  const usable = /Learning tools usable this turn: ([^.]*)\./.exec(route)?.[1]
+  if (usable === undefined || usable === 'none') return []
+  return usable.split(', ')
 }
 
 async function selectVisual(ctx: Context, kind: string, agent?: Agent, callId = `select-visual-${kind}`): Promise<void> {
-  const result = await ctx.tools.execute({
-    signal: testToolSignal,
-    callId: CallId(callId),
+  const result = await executeTool(ctx, {
+    callId: (callId),
     name: 'learning_visual_select',
     arguments: {
       kind,
@@ -88,9 +108,8 @@ async function selectCheckpoint(
   overrides: Partial<LearningCheckpointV1> = {},
 ): Promise<void> {
   const selected = checkpoint(overrides)
-  const result = await ctx.tools.execute({
-    signal: testToolSignal,
-    callId: CallId(callId),
+  const result = await executeTool(ctx, {
+    callId: (callId),
     name: 'learning_checkpoint_select',
     arguments: {
       kind: selected.kind,
@@ -131,7 +150,7 @@ function answerFor(
 
 async function setupBroker(richClient: boolean) {
   const ctx = new Context()
-  await ctx.plugin(AgentRegistry)
+  await mountAgentRegistry(ctx)
   await ctx.plugin(UserQuestionService)
   if (richClient) {
     ctx.provide('clientModules', {
@@ -152,9 +171,10 @@ describe('LearningActivityBroker compatibility boundary', () => {
 
   it('registers no global tool or prompt from the Host entry', async () => {
     const ctx = new Context()
-    await ctx.plugin(AgentRegistry)
+    await mountAgentRegistry(ctx)
     await ctx.plugin(UserQuestionService)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     const toolsBefore = ctx.tools.schemas().map(tool => tool.name)
     const promptBefore = await ctx.systemPrompt.assemble()
@@ -168,10 +188,11 @@ describe('non-blocking Learning Agent v4.1', () => {
   it('applies the deterministic route to the production prompt surface', async () => {
     const ctx = await setupBroker(true)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
     const agent = stubAgent('turn-route')
-    const disposeAgent = ctx.agents.register(agent)
+    const disposeAgent = await registerRoot(ctx, agent)
 
     ctx.emit('agent/inbox/claimed', {
       agent,
@@ -184,13 +205,16 @@ describe('non-blocking Learning Agent v4.1', () => {
       turn: 1,
     } as never)
     const ordinary = await ctx.systemPrompt.assemble({ scope: agent, agent })
-    expect(ordinary.sections.some(section => section.name === 'learning:policy')).toBe(false)
+    const ordinaryTools = await routeUsableTools(ctx, agent)
+    // The policy section stays in the stable prefix; the route context makes the turn ordinary.
+    expect(ordinary.sections.some(section => section.name === 'learning:policy')).toBe(true)
+    expect(ordinary.contexts.find(context => context.name === 'learning:turn-route')?.text)
+      .toContain('Learning tools are unavailable this turn')
     expect(ordinary.contexts.find(context => context.name === 'learning:turn-route')?.text)
       .toContain('intent=not-learn; route=direct')
-    expect(ordinary.tools.some(tool => tool.name.startsWith('learning_'))).toBe(false)
-    const denied = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('ordinary-route-learning-tool'),
+    expect(ordinaryTools.some(name => name.startsWith('learning_'))).toBe(false)
+    const denied = await executeTool(ctx, {
+      callId: ('ordinary-route-learning-tool'),
       name: 'learning_visual_select',
       arguments: {
         kind: 'plot',
@@ -213,10 +237,11 @@ describe('non-blocking Learning Agent v4.1', () => {
       turn: 2,
     } as never)
     const learning = await ctx.systemPrompt.assemble({ scope: agent, agent })
+    const learningTools = await routeUsableTools(ctx, agent)
     expect(learning.sections.some(section => section.name === 'learning:policy')).toBe(true)
-    expect(learning.tools.some(tool => tool.name === 'learning_visual_select')).toBe(false)
-    expect(learning.tools.some(tool => tool.name === 'learning_checkpoint_select')).toBe(false)
-    expect(learning.tools.some(tool => tool.name === 'learning_state_update')).toBe(true)
+    expect(learningTools.includes('learning_visual_select')).toBe(false)
+    expect(learningTools.includes('learning_checkpoint_select')).toBe(false)
+    expect(learningTools.includes('learning_state_update')).toBe(true)
     expect(learning.contexts.find(context => context.name === 'learning:turn-route')?.text)
       .toContain('route=calibrate')
     expect(learning.contexts.find(context => context.name === 'learning:turn-route')?.text)
@@ -233,11 +258,12 @@ describe('non-blocking Learning Agent v4.1', () => {
       turn: 3,
     } as never)
     const inherited = await ctx.systemPrompt.assemble({ scope: agent, agent })
+    const inheritedTools = await routeUsableTools(ctx, agent)
     expect(inherited.sections.some(section => section.name === 'learning:policy')).toBe(true)
     expect(inherited.contexts.find(context => context.name === 'learning:turn-route')?.text)
       .toMatch(/route=continue; reason=active-segment/)
-    expect(inherited.tools.some(tool => tool.name === 'learning_visual_select')).toBe(true)
-    expect(inherited.tools.some(tool => tool.name === 'learning_checkpoint_select')).toBe(true)
+    expect(inheritedTools.includes('learning_visual_select')).toBe(true)
+    expect(inheritedTools.includes('learning_checkpoint_select')).toBe(true)
 
     ctx.emit('agent/inbox/claimed', {
       agent,
@@ -250,20 +276,22 @@ describe('non-blocking Learning Agent v4.1', () => {
       turn: 4,
     } as never)
     const switched = await ctx.systemPrompt.assemble({ scope: agent, agent })
-    expect(switched.sections.some(section => section.name === 'learning:policy')).toBe(false)
+    expect(switched.sections.some(section => section.name === 'learning:policy')).toBe(true)
+    expect(switched.contexts.some(context => context.name === 'learning:learner-state')).toBe(false)
     expect(switched.contexts.find(context => context.name === 'learning:turn-route')?.text)
       .toContain('intent=not-learn; route=direct')
 
-    disposeAgent()
+    await disposeAgent()
   })
 
   it('restores an active learning route from durable learner state', async () => {
     const ctx = await setupBroker(true)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
     const agent = stubAgent('restored-turn-route')
-    const disposeAgent = ctx.agents.register(agent)
+    const disposeAgent = await registerRoot(ctx, agent)
 
     ctx.learningActivities.updateLearnerState({
       action: 'update',
@@ -306,20 +334,22 @@ describe('non-blocking Learning Agent v4.1', () => {
       turn: 3,
     } as never)
     const switched = await ctx.systemPrompt.assemble({ scope: agent, agent })
-    expect(switched.sections.some(section => section.name === 'learning:policy')).toBe(false)
+    expect(switched.sections.some(section => section.name === 'learning:policy')).toBe(true)
+    expect(switched.contexts.some(context => context.name === 'learning:learner-state')).toBe(false)
     expect(switched.contexts.find(context => context.name === 'learning:turn-route')?.text)
       .toContain('intent=not-learn; route=direct')
 
-    disposeAgent()
+    await disposeAgent()
   })
 
   it('allows only one rich teaching move per user turn and resets the choice on the next learner message', async () => {
     const ctx = await setupBroker(true)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
     const agent = stubAgent('rich-move-budget')
-    const disposeAgent = ctx.agents.register(agent)
+    const disposeAgent = await registerRoot(ctx, agent)
 
     ctx.emit('agent/inbox/claimed', {
       agent,
@@ -334,9 +364,8 @@ describe('non-blocking Learning Agent v4.1', () => {
     await selectVisual(ctx, 'plot', agent)
 
     const selected = checkpoint()
-    const denied = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('checkpoint-after-visual'),
+    const denied = await executeTool(ctx, {
+      callId: ('checkpoint-after-visual'),
       name: 'learning_checkpoint_select',
       arguments: {
         kind: selected.kind,
@@ -361,25 +390,36 @@ describe('non-blocking Learning Agent v4.1', () => {
     } as never)
     await selectCheckpoint(ctx, agent, 'checkpoint-on-next-turn')
 
-    disposeAgent()
+    await disposeAgent()
   })
 
   it('exposes rich tools only when the route and client can use them', async () => {
     const rich = await setupBroker(true)
     await rich.plugin(ToolRuntime)
+    await rich.plugin(nativeToolExecutor)
     await rich.plugin(SystemPrompt)
     await rich.plugin(learningAgent)
 
     const toolNamesFor = async (id: string, text: string): Promise<string[]> => {
       const agent = stubAgent(id)
-      const disposeAgent = rich.agents.register(agent)
+      const disposeAgent = await registerRoot(rich, agent)
       rich.emit('agent/inbox/claimed', {
         agent,
         message: { id: `${id}-message`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] },
         turn: 1,
       } as never)
-      const names = (await rich.systemPrompt.assemble({ scope: agent, agent })).tools.map(tool => tool.name)
-      disposeAgent()
+      const names = await routeUsableTools(rich, agent)
+      if (!names.includes('learning_visual_select')) {
+        const denied = await executeTool(rich, {
+          callId: `${id}-visual-denied`,
+          name: 'learning_visual_select',
+          arguments: { kind: 'plot', purpose: 'Not usable on this route.', learnerAction: 'Inspect it.' },
+          agent,
+        })
+        expect(denied.isError).toBe(true)
+        expect(JSON.stringify(denied.content)).toContain('unavailable for the current route or client')
+      }
+      await disposeAgent()
       return names
     }
 
@@ -398,10 +438,11 @@ describe('non-blocking Learning Agent v4.1', () => {
 
     const plain = await setupBroker(false)
     await plain.plugin(ToolRuntime)
+    await plain.plugin(nativeToolExecutor)
     await plain.plugin(SystemPrompt)
     await plain.plugin(learningAgent)
     const plainAgent = stubAgent('plain-client-route')
-    const disposePlain = plain.agents.register(plainAgent)
+    const disposePlain = await registerRoot(plain, plainAgent)
     plain.emit('agent/inbox/claimed', {
       agent: plainAgent,
       message: {
@@ -410,16 +451,17 @@ describe('non-blocking Learning Agent v4.1', () => {
       },
       turn: 1,
     } as never)
-    const plainTools = (await plain.systemPrompt.assemble({ scope: plainAgent, agent: plainAgent })).tools.map(tool => tool.name)
+    const plainTools = await routeUsableTools(plain, plainAgent)
     expect(plainTools).toContain('learning_state_update')
     expect(plainTools).not.toContain('learning_visual_select')
     expect(plainTools).not.toContain('learning_checkpoint_select')
-    disposePlain()
+    await disposePlain()
   })
 
   it('exposes one visual and one optional answer-free checkpoint through closed model schemas', async () => {
     const ctx = await setupBroker(true)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
 
@@ -446,28 +488,32 @@ describe('non-blocking Learning Agent v4.1', () => {
     expect(JSON.stringify(parameters.properties?.kind)).toContain('causal_loop=signed feedback')
     expect(JSON.stringify(parameters)).not.toContain('2 to 48 nodes')
 
-    const missingSemanticConstraint = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('select-visual-missing-constraint'),
+    // 0.2 admits conditional tools only through an Agent's resolved step set.
+    // A Context-less stub keeps the selected payload tool in the global layer.
+    const schemaAgent = stubAgent('selected-visual-schema')
+    await registerRoot(ctx, schemaAgent)
+    const missingSemanticConstraint = await executeTool(ctx, {
+      callId: ('select-visual-missing-constraint'),
       name: 'learning_visual_select',
       arguments: { kind: 'plot', purpose: 'Show the relationship.' },
+      agent: schemaAgent,
     })
     expect(missingSemanticConstraint.isError).toBe(true)
     expect(JSON.stringify(missingSemanticConstraint.content)).toContain('learnerAction or pairedQuestion')
 
-    const competingSemanticConstraints = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('select-visual-competing-constraints'),
+    const competingSemanticConstraints = await executeTool(ctx, {
+      callId: ('select-visual-competing-constraints'),
       name: 'learning_visual_select',
       arguments: {
         kind: 'plot', purpose: 'Show one relationship.',
         learnerAction: 'Move the slider.', pairedQuestion: 'What changes?',
       },
+      agent: schemaAgent,
     })
     expect(competingSemanticConstraints.isError).toBe(true)
     expect(JSON.stringify(competingSemanticConstraints.content)).toContain('exactly one')
 
-    await selectVisual(ctx, 'node_link')
+    await selectVisual(ctx, 'node_link', schemaAgent)
     const selectedSchemas = ctx.tools.schemas()
     expect(selectedSchemas.map(tool => tool.name)).toEqual([
       'learning_visual_select',
@@ -482,9 +528,9 @@ describe('non-blocking Learning Agent v4.1', () => {
     expect(completeSchema).toContain('Inspect the node_link relationship and name one change you notice.')
 
     const checkpointAgent = stubAgent('selected-checkpoint-schema')
-    registerRoot(ctx, checkpointAgent)
+    await registerRoot(ctx, checkpointAgent)
     await selectCheckpoint(ctx, checkpointAgent, 'select-schema-checkpoint')
-    const fullCheckpoint = ctx.tools.schemas({ scope: checkpointAgent })
+    const fullCheckpoint = ctx.tools.schemas(checkpointAgent)
       .find(tool => tool.name === 'learning_checkpoint')
     const fullCheckpointSchema = JSON.stringify(fullCheckpoint)
     expect(fullCheckpointSchema).toContain('The prediction determines whether to explain FIFO or move to transfer.')
@@ -493,7 +539,7 @@ describe('non-blocking Learning Agent v4.1', () => {
     expect(fullCheckpointSchema).not.toContain('"options"')
 
     await selectCheckpoint(ctx, checkpointAgent, 'select-choice-schema', { kind: 'single_choice' })
-    const choiceCheckpoint = ctx.tools.schemas({ scope: checkpointAgent })
+    const choiceCheckpoint = ctx.tools.schemas(checkpointAgent)
       .find(tool => tool.name === 'learning_checkpoint') as {
         parameters?: { properties?: Record<string, unknown>; required?: string[] }
       } | undefined
@@ -533,18 +579,21 @@ describe('non-blocking Learning Agent v4.1', () => {
   it('accepts every catalog fixture, returns ready immediately, and never creates a user-question wait', async () => {
     const ctx = await setupBroker(true)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
     expect(ctx.learningActivities.pendingCount).toBe(0)
 
     const ready = { protocol: VISUAL_RESULT_PROTOCOL_V4, status: 'ready' }
+    const catalogAgent = stubAgent('visual-catalog')
+    await registerRoot(ctx, catalogAgent)
     for (const [name, visual] of Object.entries(visualV4Catalog)) {
-      await selectVisual(ctx, visual.content.kind, undefined, `select-${name}`)
-      const result = await ctx.tools.execute({
-        signal: testToolSignal,
-        callId: CallId(`visual-${name}`),
+      await selectVisual(ctx, visual.content.kind, catalogAgent, `select-${name}`)
+      const result = await executeTool(ctx, {
+        callId: (`visual-${name}`),
         name: 'learning_visual',
         arguments: visual,
+        agent: catalogAgent,
       })
       expect(result).toEqual({
         content: [{ type: 'text', text: JSON.stringify(ready) }],
@@ -560,15 +609,15 @@ describe('non-blocking Learning Agent v4.1', () => {
     for (const richClient of [true, false]) {
       const ctx = await setupBroker(richClient)
       await ctx.plugin(ToolRuntime)
+      await ctx.plugin(nativeToolExecutor)
       await ctx.plugin(SystemPrompt)
       await ctx.plugin(learningAgent)
       const agent = stubAgent(`visual-availability-${String(richClient)}`)
-      const disposeAgent = ctx.agents.register(agent)
+      const disposeAgent = await registerRoot(ctx, agent)
       await selectVisual(ctx, 'plot', agent, `select-availability-${String(richClient)}`)
 
-      const result = await ctx.tools.execute({
-        signal: testToolSignal,
-        callId: CallId(`availability-${String(richClient)}`),
+      const result = await executeTool(ctx, {
+        callId: (`availability-${String(richClient)}`),
         name: 'learning_visual',
         arguments: visualV4Catalog.derivativePlot,
         agent,
@@ -581,13 +630,14 @@ describe('non-blocking Learning Agent v4.1', () => {
       })
       // An unrendered visual is not a teaching move that happened.
       expect(ctx.learningActivities.learnerState(agent).lastMove).toBe(richClient ? 'visual' : 'none')
-      disposeAgent()
+      await disposeAgent()
     }
   })
 
   it('rejects distinct checkpoint calls in one logged model step but permits an idempotent call replay', async () => {
     const ctx = await setupBroker(false)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
 
@@ -595,11 +645,10 @@ describe('non-blocking Learning Agent v4.1', () => {
       checkpointCall('checkpoint-a'),
       checkpointCall('checkpoint-b'),
     ])
-    registerRoot(ctx, duplicateAgent)
+    await registerRoot(ctx, duplicateAgent)
     await selectCheckpoint(ctx, duplicateAgent, 'select-duplicate-checkpoint')
-    const rejected = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('checkpoint-a'),
+    const rejected = await executeTool(ctx, {
+      callId: ('checkpoint-a'),
       name: 'learning_checkpoint',
       arguments: checkpoint(),
       agent: duplicateAgent,
@@ -614,11 +663,10 @@ describe('non-blocking Learning Agent v4.1', () => {
         data: { turn: 1, step: 1, callId: 'state-same-step', name: 'learning_state_update', arguments: '{}' },
       },
     ])
-    registerRoot(ctx, mixedAgent)
+    await registerRoot(ctx, mixedAgent)
     await selectCheckpoint(ctx, mixedAgent, 'select-mixed-checkpoint')
-    const mixed = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('checkpoint-mixed'),
+    const mixed = await executeTool(ctx, {
+      callId: ('checkpoint-mixed'),
       name: 'learning_checkpoint',
       arguments: checkpoint(),
       agent: mixedAgent,
@@ -627,11 +675,10 @@ describe('non-blocking Learning Agent v4.1', () => {
     expect(JSON.stringify(mixed.content)).toContain('only tool call')
 
     const replayAgent = stubAgent('replay-step', [checkpointCall('checkpoint-replay')])
-    registerRoot(ctx, replayAgent)
+    await registerRoot(ctx, replayAgent)
     await selectCheckpoint(ctx, replayAgent, 'select-replay-checkpoint')
-    const execute = () => ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('checkpoint-replay'),
+    const execute = () => executeTool(ctx, {
+      callId: ('checkpoint-replay'),
       name: 'learning_checkpoint',
       arguments: checkpoint(),
       agent: replayAgent,
@@ -731,10 +778,11 @@ describe('session-scoped learner-state Host wiring', () => {
   it('folds ordinary evidence into the next prompt, auto-records tools, resets, and clears cache', async () => {
     const ctx = await setupBroker(false)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
     const agent = stubAgent('state-chain')
-    const disposeAgent = ctx.agents.register(agent)
+    const disposeAgent = await registerRoot(ctx, agent)
 
     const stateContext = async (): Promise<string> => {
       const assembly = await ctx.systemPrompt.assemble({ scope: agent, agent })
@@ -762,15 +810,14 @@ describe('session-scoped learner-state Host wiring', () => {
         },
       },
     } as const
-    const updated = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-goal'),
+    const updated = await executeTool(ctx, {
+      callId: ('state-goal'),
       name: 'learning_state_update',
       arguments: goalUpdate,
       agent,
     })
     expect(updated).toMatchObject({ isError: false, value: { status: 'updated', revision: 1 } })
-    expect(agent.session.events.at(-1)).toMatchObject({
+    expect(agent.session.snapshotEvents().at(-1)).toMatchObject({
       type: LEARNER_STATE_SESSION_EVENT_TYPE,
       data: {
         protocol: LEARNER_STATE_EVENT_PROTOCOL,
@@ -778,23 +825,21 @@ describe('session-scoped learner-state Host wiring', () => {
         snapshot: { goal: 'Understand FIFO queues', revision: 1 },
       },
     })
-    expect(agent.session.events.at(-1)?.data).not.toHaveProperty('snapshot.sessionId')
+    expect(agent.session.snapshotEvents().at(-1)?.data).not.toHaveProperty('snapshot.sessionId')
     expect(await stateContext()).toContain('goal: "Understand FIFO queues"')
 
-    const stateEventsBeforeReplay = agent.session.events.filter(event => event.type === 'learning/state').length
-    const replay = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-goal-replay'),
+    const stateEventsBeforeReplay = agent.session.snapshotEvents().filter(event => event.type === 'learning/state').length
+    const replay = await executeTool(ctx, {
+      callId: ('state-goal-replay'),
       name: 'learning_state_update',
       arguments: goalUpdate,
       agent,
     })
     expect(replay).toMatchObject({ isError: false, value: { status: 'updated', revision: 1 } })
-    expect(agent.session.events.filter(event => event.type === 'learning/state')).toHaveLength(stateEventsBeforeReplay)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'learning/state')).toHaveLength(stateEventsBeforeReplay)
 
-    const reorderedReplay = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-goal-reordered-replay'),
+    const reorderedReplay = await executeTool(ctx, {
+      callId: ('state-goal-reordered-replay'),
       name: 'learning_state_update',
       arguments: {
         event: {
@@ -812,11 +857,10 @@ describe('session-scoped learner-state Host wiring', () => {
       agent,
     })
     expect(reorderedReplay).toMatchObject({ isError: false, value: { status: 'updated', revision: 1 } })
-    expect(agent.session.events.filter(event => event.type === 'learning/state')).toHaveLength(stateEventsBeforeReplay)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'learning/state')).toHaveLength(stateEventsBeforeReplay)
 
-    const conflictingReplay = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-goal-conflict'),
+    const conflictingReplay = await executeTool(ctx, {
+      callId: ('state-goal-conflict'),
       name: 'learning_state_update',
       arguments: {
         ...goalUpdate,
@@ -827,9 +871,8 @@ describe('session-scoped learner-state Host wiring', () => {
     expect(conflictingReplay.isError).toBe(true)
     expect(JSON.stringify(conflictingReplay.content)).toContain('replayed')
 
-    const corrected = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-correct'),
+    const corrected = await executeTool(ctx, {
+      callId: ('state-correct'),
       name: 'learning_state_update',
       arguments: {
         action: 'correct',
@@ -845,9 +888,8 @@ describe('session-scoped learner-state Host wiring', () => {
     })
     expect(corrected).toMatchObject({ isError: false, value: { status: 'corrected', revision: 2 } })
 
-    await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-stuck'),
+    await executeTool(ctx, {
+      callId: ('state-stuck'),
       name: 'learning_state_update',
       arguments: {
         action: 'update',
@@ -878,9 +920,8 @@ describe('session-scoped learner-state Host wiring', () => {
     })
 
     await selectVisual(ctx, 'plot', agent, 'select-state-visual')
-    const visual = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-visual'),
+    const visual = await executeTool(ctx, {
+      callId: ('state-visual'),
       name: 'learning_visual',
       arguments: visualV4Catalog.derivativePlot,
       agent,
@@ -895,9 +936,8 @@ describe('session-scoped learner-state Host wiring', () => {
     })
     expect(ctx.learningActivities.learnerState(agent).lastMove).toBe('checkpoint')
 
-    const reset = await ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-reset'),
+    const reset = await executeTool(ctx, {
+      callId: ('state-reset'),
       name: 'learning_state_update',
       arguments: { action: 'reset' },
       agent,
@@ -909,29 +949,29 @@ describe('session-scoped learner-state Host wiring', () => {
       lastMove: 'none',
       mastery: 'unseen',
     })
-    expect(agent.session.events.at(-1)).toMatchObject({
+    expect(agent.session.snapshotEvents().at(-1)).toMatchObject({
       type: 'learning/state',
       data: { reason: 'reset' },
     })
 
     expect(ctx.learningActivities.learnerStateCacheSize).toBe(1)
-    disposeAgent()
+    await disposeAgent()
     expect(ctx.learningActivities.learnerStateCacheSize).toBe(0)
     const fresh = stubAgent('state-chain')
-    const disposeFresh = ctx.agents.register(fresh)
+    const disposeFresh = await registerRoot(ctx, fresh)
     expect(ctx.learningActivities.learnerState(fresh)).toMatchObject({ revision: 0, goal: null })
-    disposeFresh()
+    await disposeFresh()
   })
 
   it('re-folds full snapshots into a refreshed broker and dynamic prompt', async () => {
     const first = await setupBroker(false)
     await first.plugin(ToolRuntime)
+    await first.plugin(nativeToolExecutor)
     await first.plugin(SystemPrompt)
     await first.plugin(learningAgent)
     const original = stubAgent('state-refresh')
-    await first.tools.execute({
-      signal: testToolSignal,
-      callId: CallId('state-refresh-update'),
+    await executeTool(first, {
+      callId: ('state-refresh-update'),
       name: 'learning_state_update',
       arguments: {
         action: 'update',
@@ -950,9 +990,10 @@ describe('session-scoped learner-state Host wiring', () => {
 
     const refreshed = await setupBroker(false)
     await refreshed.plugin(ToolRuntime)
+    await refreshed.plugin(nativeToolExecutor)
     await refreshed.plugin(SystemPrompt)
     await refreshed.plugin(learningAgent)
-    const resumed = stubAgent('state-refresh', original.session.events)
+    const resumed = stubAgent('state-refresh', original.session.snapshotEvents())
     expect(refreshed.learningActivities.learnerState(resumed)).toMatchObject({
       revision: 1,
       goal: 'Resume queue learning',
@@ -965,13 +1006,13 @@ describe('session-scoped learner-state Host wiring', () => {
   it('keeps every retained pedagogical field reachable through closed observable event variants', async () => {
     const ctx = await setupBroker(false)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
     const agent = stubAgent('state-field-coverage')
     const applyEvent = async (event: Record<string, unknown>, index: number): Promise<void> => {
-      const result = await ctx.tools.execute({
-        signal: testToolSignal,
-        callId: CallId(`state-field-${index}`),
+      const result = await executeTool(ctx, {
+        callId: (`state-field-${index}`),
         name: 'learning_state_update',
         arguments: { action: 'update', event },
         agent,
@@ -1069,12 +1110,12 @@ describe('session-scoped learner-state Host wiring', () => {
   it('rejects source-matrix and transfer-context violations at the closed tool schema', async () => {
     const ctx = await setupBroker(false)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(nativeToolExecutor)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(learningAgent)
     const agent = stubAgent('state-source-matrix')
-    const execute = (event: unknown, callId: string) => ctx.tools.execute({
-      signal: testToolSignal,
-      callId: CallId(callId),
+    const execute = (event: unknown, callId: string) => executeTool(ctx, {
+      callId: (callId),
       name: 'learning_state_update',
       arguments: { action: 'update', event },
       agent,
@@ -1100,7 +1141,7 @@ describe('session-scoped learner-state Host wiring', () => {
       observation: { id: 'bad-source', source: 'source-material', summary: 'A source section.' },
     }, 'bad-source')
     expect(badSource.isError).toBe(true)
-    expect(agent.session.events.filter(event => event.type === 'learning/state')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'learning/state')).toHaveLength(0)
   })
 })
 
@@ -1125,8 +1166,8 @@ describe('Learning checkpoint broker', () => {
   it('maps a terminal single-choice label back to its stable option id', async () => {
     const ctx = await setupBroker(true)
     const agent = stubAgent('terminal-choice-label')
-    registerRoot(ctx, agent)
-    ctx.userQuestions.registerProvider({
+    await registerRoot(ctx, agent)
+    registerAnswerer(ctx, {
       ask: async request => ({
         answers: [{
           id: request.questions[0]!.id,
@@ -1161,9 +1202,9 @@ describe('Learning checkpoint broker', () => {
     async status => {
       const ctx = await setupBroker(true)
       const agent = stubAgent(`terminal-${status}`)
-      registerRoot(ctx, agent)
+      await registerRoot(ctx, agent)
       const ask = vi.fn(async (request: AskUserQuestionRequest) => answerFor(request, status))
-      ctx.userQuestions.registerProvider({ ask })
+      registerAnswerer(ctx, { ask })
 
       const result = await ctx.learningActivities.presentCheckpoint({
         checkpoint: checkpoint(), agent, callId: `call-${status}`,
@@ -1191,8 +1232,8 @@ describe('Learning checkpoint broker', () => {
   it('records submitted transfer evidence as unevaluated/unknown and never upgrades mastery', async () => {
     const ctx = await setupBroker(true)
     const agent = stubAgent('checkpoint-transfer-unknown')
-    registerRoot(ctx, agent)
-    ctx.userQuestions.registerProvider({
+    await registerRoot(ctx, agent)
+    registerAnswerer(ctx, {
       ask: async request => answerFor(request, 'submitted', { receiptId: 'transfer-unknown-receipt' }),
     })
 
@@ -1221,14 +1262,14 @@ describe('Learning checkpoint broker', () => {
   it('deduplicates one pending call and rejects altered replay content or a second pending call in the session', async () => {
     const ctx = await setupBroker(true)
     const agent = stubAgent('pending-session')
-    registerRoot(ctx, agent)
+    await registerRoot(ctx, agent)
     let resolveAnswer: ((answer: ReturnType<typeof answerFor>) => void) | undefined
     let seenRequest: AskUserQuestionRequest | undefined
     const ask = vi.fn((request: AskUserQuestionRequest) => {
       seenRequest = request
       return new Promise<ReturnType<typeof answerFor>>(resolve => { resolveAnswer = resolve })
     })
-    ctx.userQuestions.registerProvider({ ask })
+    registerAnswerer(ctx, { ask })
     const request = { checkpoint: checkpoint(), agent, callId: 'stable-call' }
 
     const first = ctx.learningActivities.presentCheckpoint(request)
@@ -1255,8 +1296,8 @@ describe('Learning checkpoint broker', () => {
     const ctx = await setupBroker(true)
     const agentA = stubAgent('pending-a')
     const agentB = stubAgent('pending-b')
-    registerRoot(ctx, agentA)
-    registerRoot(ctx, agentB)
+    await registerRoot(ctx, agentA)
+    await registerRoot(ctx, agentB)
     const pending = new Map<string, {
       request: AskUserQuestionRequest
       resolve(answer: ReturnType<typeof answerFor>): void
@@ -1266,7 +1307,7 @@ describe('Learning checkpoint broker', () => {
       if (envelope === undefined) throw new Error('missing checkpoint detail')
       pending.set(envelope.sessionId, { request, resolve })
     }))
-    ctx.userQuestions.registerProvider({ ask })
+    registerAnswerer(ctx, { ask })
 
     const resultA = ctx.learningActivities.presentCheckpoint({
       checkpoint: checkpoint(), agent: agentA, callId: 'pending-a-call',
@@ -1291,10 +1332,10 @@ describe('Learning checkpoint broker', () => {
   it('aborts on learner-state reset and rejects a late submission without restoring checkpoint state', async () => {
     const ctx = await setupBroker(true)
     const agent = stubAgent('checkpoint-reset')
-    registerRoot(ctx, agent)
+    await registerRoot(ctx, agent)
     let resolveAnswer: ((answer: ReturnType<typeof answerFor>) => void) | undefined
     let seenRequest: AskUserQuestionRequest | undefined
-    ctx.userQuestions.registerProvider({
+    registerAnswerer(ctx, {
       ask(request) {
         seenRequest = request
         return new Promise(resolve => { resolveAnswer = resolve })
@@ -1323,17 +1364,17 @@ describe('Learning checkpoint broker', () => {
       lastMove: 'none',
       mastery: 'unseen',
     })
-    expect(agent.session.events.filter(event => event.type === 'learning/state')).toHaveLength(1)
-    expect(agent.session.events.at(-1)).toMatchObject({ data: { reason: 'reset' } })
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'learning/state')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().at(-1)).toMatchObject({ data: { reason: 'reset' } })
   })
 
   it('fences a disposed checkpoint from a replacement session object reusing the same id', async () => {
     const ctx = await setupBroker(true)
     const original = stubAgent('reused-session-id')
-    const disposeOriginal = ctx.agents.register(original)
+    const disposeOriginal = await registerRoot(ctx, original)
     let resolveAnswer: ((answer: ReturnType<typeof answerFor>) => void) | undefined
     let seenRequest: AskUserQuestionRequest | undefined
-    ctx.userQuestions.registerProvider({
+    registerAnswerer(ctx, {
       ask(request) {
         seenRequest = request
         return new Promise(resolve => { resolveAnswer = resolve })
@@ -1347,12 +1388,12 @@ describe('Learning checkpoint broker', () => {
     })
     expect(ctx.learningActivities.pendingCount).toBe(1)
     expect(ctx.learningActivities.checkpointCacheSize).toBe(3)
-    disposeOriginal()
+    await disposeOriginal()
     expect(ctx.learningActivities.pendingCount).toBe(0)
     expect(ctx.learningActivities.checkpointCacheSize).toBe(0)
 
     const replacement = stubAgent('reused-session-id')
-    const disposeReplacement = ctx.agents.register(replacement)
+    const disposeReplacement = await registerRoot(ctx, replacement)
     await expect(pending).resolves.toMatchObject({ status: 'cancelled' })
     resolveAnswer?.(answerFor(seenRequest!, 'submitted', { receiptId: 'late-old-session-receipt' }))
     await Promise.resolve()
@@ -1362,8 +1403,8 @@ describe('Learning checkpoint broker', () => {
       evidence: [],
       lastMove: 'none',
     })
-    expect(original.session.events.filter(event => event.type === 'learning/state')).toHaveLength(0)
-    expect(replacement.session.events.filter(event => event.type === 'learning/state')).toHaveLength(0)
+    expect(original.session.snapshotEvents().filter(event => event.type === 'learning/state')).toHaveLength(0)
+    expect(replacement.session.snapshotEvents().filter(event => event.type === 'learning/state')).toHaveLength(0)
 
     const replacementPending = ctx.learningActivities.presentCheckpoint({
       checkpoint: checkpoint(),
@@ -1383,7 +1424,7 @@ describe('Learning checkpoint broker', () => {
     })
     expect(ctx.learningActivities.learnerState(replacement).evidence).toHaveLength(1)
     expect(ctx.learningActivities.checkpointCacheSize).toBe(2)
-    disposeReplacement()
+    await disposeReplacement()
     expect(ctx.learningActivities.checkpointCacheSize).toBe(0)
   })
 
@@ -1391,10 +1432,10 @@ describe('Learning checkpoint broker', () => {
     for (const mode of ['abort', 'timeout'] as const) {
       const ctx = await setupBroker(true)
       const agent = stubAgent(`late-${mode}`)
-      registerRoot(ctx, agent)
+      await registerRoot(ctx, agent)
       let resolveAnswer: ((answer: ReturnType<typeof answerFor>) => void) | undefined
       let seenRequest: AskUserQuestionRequest | undefined
-      ctx.userQuestions.registerProvider({
+      registerAnswerer(ctx, {
         ask(request) {
           seenRequest = request
           return new Promise(resolve => { resolveAnswer = resolve })
@@ -1426,11 +1467,11 @@ describe('Learning checkpoint broker', () => {
   it('settles plugin disposal once and ignores a late response', async () => {
     const ctx = await setupBroker(true)
     const agent = stubAgent('dispose-pending')
-    registerRoot(ctx, agent)
+    await registerRoot(ctx, agent)
     let resolveAnswer: ((answer: ReturnType<typeof answerFor>) => void) | undefined
     let seenRequest: AskUserQuestionRequest | undefined
     let askCount = 0
-    ctx.userQuestions.registerProvider({
+    registerAnswerer(ctx, {
       ask(request) {
         askCount += 1
         if (askCount === 1) {
@@ -1475,8 +1516,8 @@ describe('Learning checkpoint broker', () => {
   it('degrades an unexpected provider failure to a skipped terminal result', async () => {
     const ctx = await setupBroker(true)
     const agent = stubAgent('provider-failure')
-    registerRoot(ctx, agent)
-    ctx.userQuestions.registerProvider({ ask: async () => { throw new Error('renderer crashed') } })
+    await registerRoot(ctx, agent)
+    registerAnswerer(ctx, { ask: async () => { throw new Error('renderer crashed') } })
 
     await expect(ctx.learningActivities.presentCheckpoint({
       checkpoint: checkpoint(), agent, callId: 'provider-failure-call',

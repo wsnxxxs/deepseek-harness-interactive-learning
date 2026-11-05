@@ -1,9 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { ComponentType } from 'react'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import { LearningToolView } from '../src/client/LearningToolView.tsx'
 import { en } from '../src/client/locales.ts'
 import {
   VISUAL_PROTOCOL_V4,
@@ -11,20 +8,7 @@ import {
   parseLearningVisualV4,
 } from '../src/protocol.ts'
 import { visualV4Catalog } from './fixtures.ts'
-
-const t = ((key: keyof typeof en, params?: Record<string, string | number>) => {
-  let value: string = en[key]
-  for (const [name, replacement] of Object.entries(params ?? {})) {
-    value = value.replace(`{${name}}`, String(replacement))
-  }
-  return value
-}) as TranslateNS<'interactive-learning'>
-
-const ToolView = LearningToolView as unknown as ComponentType<Record<string, unknown>>
-
-const useEmptySession = (selector: (snapshot: { pending: unknown[] }) => unknown): unknown => (
-  selector({ pending: [] })
-)
+import { preparingBlock, ToolView, toolViewProps } from './toolview-harness.tsx'
 
 function completedBlock(args: unknown, callId: string) {
   return {
@@ -40,13 +24,7 @@ function completedBlock(args: unknown, callId: string) {
 }
 
 function props(args: unknown, callId: string) {
-  return {
-    block: completedBlock(args, callId),
-    inspect: () => {},
-    t,
-    sessionId: 'session_state',
-    useSession: useEmptySession,
-  }
+  return toolViewProps(completedBlock(args, callId), { sessionId: 'session_state' })
 }
 
 afterEach(cleanup)
@@ -127,13 +105,7 @@ describe('rejected arguments explain themselves', () => {
 
   it('shows the neutral running state while arguments are still incomplete', () => {
     render(
-      <ToolView
-        block={{ callId: 'call_stream', argsRaw: '{"protocol":"dsh-learning/visual@4","ti' }}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_state"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(preparingBlock('call_stream', 'learning_visual', '{"protocol":"dsh-learning/visual@4","ti'), { sessionId: 'session_state' })} />,
     )
     expect(screen.getByText(en.waiting)).toBeTruthy()
   })
@@ -141,13 +113,7 @@ describe('rejected arguments explain themselves', () => {
   it('names the figure as soon as the title arrives in the stream', () => {
     const streaming = '{"protocol":"dsh-learning/visual@4","title":"Power rule and its derivative","description":"Dr'
     render(
-      <ToolView
-        block={{ callId: 'call_title', argsRaw: streaming }}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_state"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(preparingBlock('call_title', 'learning_visual', streaming), { sessionId: 'session_state' })} />,
     )
     expect(screen.getByText('Preparing: Power rule and its derivative')).toBeTruthy()
     expect(screen.queryByText(en.waiting)).toBeNull()
@@ -156,26 +122,14 @@ describe('rejected arguments explain themselves', () => {
   it('decodes escapes and ignores a title from a non-visual payload', () => {
     const escaped = '{"protocol":"dsh-learning/visual@4","title":"Reading \\"big O\\" notation","desc'
     const { unmount } = render(
-      <ToolView
-        block={{ callId: 'call_escape', argsRaw: escaped }}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_state"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(preparingBlock('call_escape', 'learning_visual', escaped), { sessionId: 'session_state' })} />,
     )
     expect(screen.getByText('Preparing: Reading "big O" notation')).toBeTruthy()
     unmount()
 
     // A checkpoint carries no title, so the wait stays neutral.
     render(
-      <ToolView
-        block={{ callId: 'call_other', argsRaw: '{"protocol":"dsh-learning/checkpoint@1","title":"leak me","pro' }}
-        inspect={() => {}}
-        t={t}
-        sessionId="session_state"
-        useSession={useEmptySession}
-      />,
+      <ToolView {...toolViewProps(preparingBlock('call_other', 'learning_visual', '{"protocol":"dsh-learning/checkpoint@1","title":"leak me","pro'), { sessionId: 'session_state' })} />,
     )
     expect(screen.getByText(en.waiting)).toBeTruthy()
     expect(screen.queryByText(/leak me/)).toBeNull()

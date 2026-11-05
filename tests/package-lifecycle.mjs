@@ -211,7 +211,13 @@ try {
   }
   await readFile(join(packedPackage, 'README.md'), 'utf8')
   await readFile(join(packedPackage, 'README.en.md'), 'utf8')
-  await readFile(join(packedPackage, 'preset', 'learning', 'agent.cordis.yml'), 'utf8')
+  await readFile(join(packedPackage, 'preset', 'learning', 'skills', 'interactive-teaching', 'SKILL.md'), 'utf8')
+  // Harness 0.2 presets are declaration rows: the bundle patch must carry the
+  // Learning preset row itself (nothing reads a copied preset directory).
+  const packedPatch = await readFile(join(packedPackage, 'cordis.patch.yml'), 'utf8')
+  assert.ok(packedPatch.includes("name: '@deepseek-ai/dsh-agent-preset'"), 'bundle patch must declare the preset row')
+  assert.ok(packedPatch.includes("name: '@dsh-portable/interactive-learning/agent'"), 'preset row must mount the agent entry')
+  assert.equal(manifest.dsh?.bundle?.patch, './cordis.patch.yml')
 
   // Install the actual pnpm tarball into an isolated standalone consumer.
   // Peer dependencies are declared explicitly at the same release versions
@@ -312,28 +318,39 @@ try {
   assert.equal(clientRegistration?.id, '@dsh-portable/interactive-learning')
   assert.equal(typeof clientRegistration?.factory, 'function')
 
+  // The preset row resolves its skills from the installed package exactly as
+  // the bundle patch's `!!js` expression does from a profile's baseUrl.
+  const skillRoot = join(dirname(createRequire(join(consumerRoot, 'package.json'))
+    .resolve('@dsh-portable/interactive-learning/package.json')), 'preset', 'learning', 'skills')
+  await readFile(join(skillRoot, 'interactive-teaching', 'SKILL.md'), 'utf8')
+
+  // The former directory installer is now a legacy-cleanup compatibility tool.
   const installer = await importFrom(join(installedPackage, 'lib', 'installer.js'))
   const dshHome = join(smokeRoot, 'external-dsh-home')
-  const first = await installer.installLearningPreset({ dshHome })
-  assert.ok(first.installed.includes('agent.cordis.yml'))
-  const target = join(dshHome, '.agent-presets', 'learning')
-  const ownership = JSON.parse(await readFile(join(target, '.dsh-managed.json'), 'utf8'))
-  assert.equal(ownership.package, '@dsh-portable/interactive-learning')
-  assert.equal(ownership.userModified, false)
-
-  const upgradedSource = join(smokeRoot, 'upgraded-preset')
-  await cp(join(installedPackage, 'preset', 'learning'), upgradedSource, { recursive: true })
-  const upgradedAgent = join(upgradedSource, 'agent.cordis.yml')
-  await writeFile(upgradedAgent, `${await readFile(upgradedAgent, 'utf8')}\n# package upgrade fixture\n`)
-  const upgraded = await installer.installLearningPreset({ dshHome, source: upgradedSource })
-  assert.ok(upgraded.updated.includes('agent.cordis.yml'))
-
-  const userOwned = join(target, 'agent.cordis.yml')
-  await writeFile(userOwned, `${await readFile(userOwned, 'utf8')}# user customization\n`)
+  const target = installer.legacyLearningPresetTarget(dshHome)
+  const legacyOwned = 'name: Learning\n'
+  await mkdir(target, { recursive: true })
+  await writeFile(join(target, 'preset.yml'), legacyOwned)
+  await writeFile(join(target, 'agent.cordis.yml'), '# user customization\n')
+  const { createHash } = await import('node:crypto')
+  await writeFile(join(target, '.dsh-managed.json'), JSON.stringify({
+    schema: 1, presetSchema: 1, package: '@dsh-portable/interactive-learning', packageVersion: '0.1.0',
+    preset: 'learning', source: 'package', installedAt: new Date(0).toISOString(), userModified: false,
+    files: [
+      { path: 'preset.yml', ownedHash: createHash('sha256').update(legacyOwned).digest('hex') },
+      { path: 'agent.cordis.yml', ownedHash: createHash('sha256').update('version: one\n').digest('hex') },
+    ],
+    preservedFiles: [],
+  }))
+  const migrated = await installer.installLearningPreset({ dshHome })
+  assert.equal(migrated.bundle, '@dsh-portable/interactive-learning')
+  assert.equal(migrated.presetId, 'learning')
+  assert.equal(migrated.legacy.manifestFound, true)
+  assert.ok(migrated.legacy.removed.includes('preset.yml'))
+  assert.ok(migrated.legacy.preserved.includes('agent.cordis.yml'))
+  await readFile(join(target, 'agent.cordis.yml'), 'utf8')
   const uninstalled = await installer.uninstallLearningPreset({ dshHome })
-  assert.equal(uninstalled.manifestFound, true)
-  assert.ok(uninstalled.preserved.includes('agent.cordis.yml'))
-  await readFile(userOwned, 'utf8')
+  assert.equal(uninstalled.manifestFound, false)
 
   console.log(JSON.stringify({
     tarball,
@@ -359,9 +376,9 @@ try {
     hostEnabled: true,
     clientEnabled: clientRegistration.id,
     agentEntryEnabled: typeof agent.apply === 'function',
-    installedFiles: first.installed.length,
-    upgradedFiles: upgraded.updated,
-    uninstallPreservedUserChanges: uninstalled.preserved,
+    bundlePresetRow: 'preset-learning',
+    legacyRemoved: migrated.legacy.removed,
+    legacyPreservedUserChanges: migrated.legacy.preserved,
   }, null, 2))
 } finally {
   assertInside(temporaryParent, smokeRoot)

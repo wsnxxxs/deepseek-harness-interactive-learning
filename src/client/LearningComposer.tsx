@@ -1,7 +1,6 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ComposerChainProps } from '@deepseek-ai/dsh-client-ui-conversation/client'
-import type { PendingWait } from '@deepseek-ai/dsh-client-runtime/client'
 import {
   CHECKPOINT_RESULT_PROTOCOL,
   RESPONSE_PROTOCOL,
@@ -27,12 +26,13 @@ import { ActivityRenderer } from './ActivityRenderer.tsx'
 import type { ActivitySubmission } from './types.ts'
 import { RoundActivity } from './RoundActivity.tsx'
 import { LearningCheckpoint } from './LearningCheckpoint.tsx'
+import { asQuestionWait, type LearningQuestionWait } from './learning-waits.ts'
 
-export type LearningQuestionWait = PendingWait<'question'>
+export type { LearningQuestionWait } from './learning-waits.ts'
 
 export function envelopeOf(wait: LearningQuestionWait): LearningActivityEnvelopeV1 | LearningWaitEnvelopeV2 | LearningCheckpointWaitEnvelopeV1 | undefined {
-  if (wait.payload.questions.length !== 1) return undefined
-  const question = wait.payload.questions[0]
+  if (wait.questions.length !== 1) return undefined
+  const question = wait.questions[0]
   if (question === undefined) return undefined
   const checkpoint = decodeLearningCheckpointDetail(question.detail)
   if (checkpoint !== undefined && decodeLearningCheckpointQuestionId(question.id) === checkpoint.waitId) {
@@ -43,37 +43,42 @@ export function envelopeOf(wait: LearningQuestionWait): LearningActivityEnvelope
   return decodeLearningQuestionId(question.id) ?? decodeLearningDetail(question.detail)
 }
 
-/** Pure composer-chain selector: only package-owned question envelopes are claimed. */
-export function selectLearningActivity({ interactions, session }: ComposerChainProps): LearningQuestionWait | null {
-  const currentSessionId = session?.sessionId
-  for (const interaction of interactions) {
-    if (interaction.kind !== 'question') continue
-    const wait = interaction as LearningQuestionWait
-    // A pending wait belongs to one live session. This explicit lineage guard
-    // prevents a fork from claiming an ancestor's unresolved interaction.
-    if (currentSessionId === undefined || String(wait.sessionId) !== String(currentSessionId)) continue
-    const envelope = envelopeOf(wait)
-    if (envelope === undefined) continue
-    if ('checkpoint' in envelope && envelope.sessionId !== String(currentSessionId)) continue
-    return wait
-  }
-  return null
+/**
+ * Pure composer-chain selector: only package-owned question envelopes are
+ * claimed. The Session's effective pending interaction is the question
+ * plugin's carrier; anything else (another domain, a foreign question)
+ * declines so the next chain entry can take it.
+ */
+export function selectLearningActivity({ pendingInteraction, sessionId }: ComposerChainProps): LearningQuestionWait | null {
+  const wait = asQuestionWait(pendingInteraction)
+  if (wait === undefined) return null
+  // A pending wait belongs to one live session. This explicit lineage guard
+  // prevents a fork from claiming an ancestor's unresolved interaction.
+  if (sessionId === undefined || String(wait.sessionId) !== String(sessionId)) return null
+  const envelope = envelopeOf(wait)
+  if (envelope === undefined) return null
+  if ('checkpoint' in envelope && envelope.sessionId !== String(sessionId)) return null
+  return wait
 }
 
-type LearningComposerProps =
+type LearningInteractionProps =
   { matched: LearningQuestionWait }
   & PropsLocale<'interactive-learning'>
 
-export function LearningComposer({ matched, t }: LearningComposerProps) {
+type LearningComposerProps =
+  LearningInteractionProps
+  & { publishLearningWait(wait: LearningQuestionWait): () => void }
+
+export function LearningComposer({ matched, publishLearningWait }: LearningComposerProps) {
   // Claim the package-owned question so the generic question composer does
   // not duplicate it. The actual interaction lives in the tool call's place
   // in the assistant turn; a pending activity intentionally has no bottom UI.
-  void matched
-  void t
+  // While this seat holds the claim it hands the carrier to the tool view.
+  useEffect(() => publishLearningWait(matched), [matched, publishLearningWait])
   return null
 }
 
-export function LearningInteraction({ matched, t }: LearningComposerProps) {
+export function LearningInteraction({ matched, t }: LearningInteractionProps) {
   const envelope = useMemo(() => envelopeOf(matched), [matched])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -85,19 +90,14 @@ export function LearningInteraction({ matched, t }: LearningComposerProps) {
     // Share the exact promise so a double click, repeated keyboard event, or
     // StrictMode replay cannot submit two terminal receipts for one wait.
     if (responseInFlight.current !== null) return responseInFlight.current
-    const question = matched.payload.questions[0]
+    const question = matched.questions[0]
     if (question === undefined) return Promise.resolve()
     const pending = Promise.resolve().then(async (): Promise<void> => {
       setBusy(true)
       setError(null)
-      const accepted = await matched.respond({
-        ok: true,
-        value: {
-          sessionId: matched.sessionId,
-          answer: { answers: [{ id: question.id, selected: [], custom: JSON.stringify(response) }] },
-        },
-      })
-      if (!accepted.accepted) throw new Error(accepted.reason)
+      // The carrier resolves the Host waterfall with the whole answer batch;
+      // it rejects when no channel accepts the answer any more.
+      await matched.answer({ answers: [{ id: question.id, selected: [], custom: JSON.stringify(response) }] })
     }).catch((cause: unknown) => {
         responseInFlight.current = null
         setBusy(false)
@@ -174,7 +174,7 @@ export function LearningInteraction({ matched, t }: LearningComposerProps) {
   }
 
   const respond = (response: LearningResponseV1): void => {
-    const question = matched.payload.questions[0]
+    const question = matched.questions[0]
     if (question === undefined) return
     setBusy(true)
     setError(null)
@@ -198,12 +198,9 @@ export function LearningInteraction({ matched, t }: LearningComposerProps) {
   const cancel = (): void => {
     setBusy(true)
     setError(null)
-    void matched.respond({
-      ok: false,
-      error: { code: 'cancelled', message: 'the learner cancelled this activity', details: {} },
-    }).then(receipt => {
-      if (!receipt.accepted) throw new Error(receipt.reason)
-    }).catch((cause: unknown) => {
+    // Dismissing an unnamed (blocking) question rejects its waterfall with
+    // ASK_CANCELLED, which the Host maps to a learner cancellation.
+    void matched.dismiss().catch((cause: unknown) => {
       setBusy(false)
       setError(t('error', { message: cause instanceof Error ? cause.message : String(cause) }))
     })

@@ -8,7 +8,7 @@ function displayExpression(text: string): string | null {
   return null
 }
 
-export function MarkdownText({ text }: { text: string }) {
+export function MarkdownText({ text }: { text: string; labels?: unknown }) {
   const expression = displayExpression(text)
   if (expression !== null) {
     const html = katex.renderToString(expression, {

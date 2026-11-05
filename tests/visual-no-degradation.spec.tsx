@@ -1,26 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render } from '@testing-library/react'
-import type { ComponentType } from 'react'
-import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
-import { LearningToolView } from '../src/client/LearningToolView.tsx'
 import { en } from '../src/client/locales.ts'
 import { LearningProtocolError, VISUAL_RESULT_PROTOCOL_V4, parseLearningVisualV4 } from '../src/protocol.ts'
 import { VISUAL_VARIANT_CORPUS } from './visual-corpus.ts'
-
-const t = ((key: keyof typeof en, params?: Record<string, string | number>) => {
-  let value: string = en[key]
-  for (const [name, replacement] of Object.entries(params ?? {})) {
-    value = value.replace(`{${name}}`, String(replacement))
-  }
-  return value
-}) as TranslateNS<'interactive-learning'>
-
-const ToolView = LearningToolView as unknown as ComponentType<Record<string, unknown>>
-
-const useEmptySession = (selector: (snapshot: { pending: unknown[] }) => unknown): unknown => (
-  selector({ pending: [] })
-)
+import { ToolView, toolViewProps } from './toolview-harness.tsx'
 
 function completedBlock(visual: unknown, callId: string) {
   return {
@@ -80,7 +64,7 @@ describe('every accepted visual variant renders instead of degrading', () => {
 
     // 2. A renderer crash falls to the error boundary, which is also a degradation.
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { container } = render(<ToolView block={completedBlock(visual, `call_${name}`)} inspect={() => {}} t={t} sessionId="corpus" useSession={useEmptySession} />)
+    const { container } = render(<ToolView {...toolViewProps(completedBlock(visual, `call_${name}`), { sessionId: 'corpus' })} />)
 
     const shell = container.querySelector('[data-learning-visual]')
     expect(shell, `${name} did not mount a visual shell`).not.toBeNull()
@@ -126,7 +110,7 @@ describe('a plot with nothing inside its axes says so', () => {
 
   it.each(Object.entries(cases))('explains the empty result for %s', (name, visual) => {
     expect(() => parseLearningVisualV4(visual)).not.toThrow()
-    const { container } = render(<ToolView block={completedBlock(visual, `empty_${name}`)} inspect={() => {}} t={t} sessionId="corpus" useSession={useEmptySession} />)
+    const { container } = render(<ToolView {...toolViewProps(completedBlock(visual, `empty_${name}`), { sessionId: 'corpus' })} />)
 
     // Still a real chart, not a text fallback.
     expect(container.querySelector('[data-learning-visual="plot"]')).not.toBeNull()
@@ -141,7 +125,7 @@ describe('a plot with nothing inside its axes says so', () => {
   it('stays silent when the series does have values in range', () => {
     const healthy = plot('ok', { op: 'variable', name: 'x' }, { label: 'x', min: 0, max: 4, samples: 32 }, { label: 'y', min: 0, max: 4 })
     expect(() => parseLearningVisualV4(healthy)).not.toThrow()
-    const { container } = render(<ToolView block={completedBlock(healthy, 'empty_none')} inspect={() => {}} t={t} sessionId="corpus" useSession={useEmptySession} />)
+    const { container } = render(<ToolView {...toolViewProps(completedBlock(healthy, 'empty_none'), { sessionId: 'corpus' })} />)
     // Guard against passing merely because the payload never rendered.
     expect(container.querySelector('[data-learning-visual="plot"]')).not.toBeNull()
     expect(container.textContent).not.toContain(en.visualNoValuesInRange)
@@ -163,7 +147,7 @@ describe('a plot with nothing inside its axes says so', () => {
       },
     }
     expect(() => parseLearningVisualV4(mixed)).not.toThrow()
-    const { container } = render(<ToolView block={completedBlock(mixed, 'empty_mixed')} inspect={() => {}} t={t} sessionId="corpus" useSession={useEmptySession} />)
+    const { container } = render(<ToolView {...toolViewProps(completedBlock(mixed, 'empty_mixed'), { sessionId: 'corpus' })} />)
 
     // The chart is not blank overall, so no whole-chart notice.
     expect(container.textContent).not.toContain(en.visualNoValuesInRange)
