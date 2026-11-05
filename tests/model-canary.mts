@@ -14,6 +14,7 @@
 import { writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
@@ -130,10 +131,38 @@ function addCheck(checks: CanaryCheck[], name: string, passed: boolean, detail: 
   checks.push({ name, passed, detail })
 }
 
-function canaryMessages(prompt: string): ChatMessage[] {
+function canaryAgent(id: string): Agent {
+  const log: Array<{ type: string; seq: number; time: number; data: unknown }> = []
+  const session = {
+    id,
+    header: { delegationDepth: 0 },
+    get seq() { return log.length },
+    snapshotEvents() { return Object.freeze([...log]) },
+    append(type: string, data: unknown) {
+      const event = Object.freeze({ type, seq: log.length, time: Date.now(), data: structuredClone(data) })
+      log.push(event)
+      return event
+    },
+  }
+  return { id, session } as unknown as Agent
+}
+
+/**
+ * One learner turn as production delivers it: the per-turn route note (the
+ * dynamic `learning:turn-route` context, which carries the opening shape and
+ * the allowed interactive tools) followed by the learner's own message.
+ */
+async function learnerTurn(agent: Agent, text: string, turn: number, canaryInstruction = ''): Promise<ChatMessage[]> {
+  ctx.emit('agent/inbox/claimed', {
+    agent,
+    message: { id: `${String(agent.id)}-${String(turn)}`, role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] },
+    turn,
+  } as never)
+  const assembly = await ctx.systemPrompt.assemble({ scope: agent, agent })
+  const routeNote = assembly.contexts.find(context => context.name === 'learning:turn-route')?.text ?? ''
   return [
-    { role: 'system', content: renderedPrompt },
-    { role: 'user', content: prompt },
+    ...(routeNote === '' ? [] : [{ role: 'user' as const, content: routeNote }]),
+    { role: 'user', content: `${text}${canaryInstruction}` },
   ]
 }
 
@@ -222,18 +251,26 @@ function validateMatrixScenario(
 
 async function runMatrixScenario(scenario: LearningCanaryScenario): Promise<CanaryScenarioResult> {
   const route = routeLearningRequest(scenario.prompt)
-  const messages = canaryMessages(`${scenario.prompt}\n\nFor this canary case, use ordinary text and do not call a visual tool.`)
+  const agent = canaryAgent(`canary-${scenario.id}`)
+  const disposeAgent = ctx.agents.register(agent)
+  await disposeAgent
+  const messages: ChatMessage[] = [{ role: 'system', content: renderedPrompt }]
   const responses: string[] = []
   const toolCalls: ToolCall[] = []
   const turns = [scenario.prompt, ...(scenario.followUps ?? [])]
   for (let index = 0; index < turns.length; index += 1) {
+    messages.push(...await learnerTurn(
+      agent,
+      turns[index]!,
+      index + 1,
+      index === 0 ? '\n\nFor this canary case, use ordinary text and do not call a visual tool.' : '',
+    ))
     const assistant = await nextAssistant(messages)
     responses.push(textOf(assistant))
     toolCalls.push(...(assistant.tool_calls ?? []))
     messages.push(assistant)
-    const nextUser = turns[index + 1]
-    if (nextUser !== undefined) messages.push({ role: 'user', content: nextUser })
   }
+  await disposeAgent()
   const checks = validateMatrixScenario(scenario, route, responses, toolCalls)
   return {
     id: scenario.id,
@@ -286,9 +323,12 @@ async function runVisualScenario(): Promise<{
   result: unknown
   teachingVerdict: ReturnType<typeof gradeTeachingCandidate>
 }> {
+  const agent = canaryAgent('canary-visual')
+  const disposeAgent = ctx.agents.register(agent)
+  await disposeAgent
   const messages: ChatMessage[] = [
     { role: 'system', content: renderedPrompt },
-    { role: 'user', content: 'Learn logistic regression.' },
+    ...await learnerTurn(agent, 'Learn logistic regression.', 1),
   ]
   const route = routeLearningRequest('Learn logistic regression.')
   if (route.route !== 'calibrate') throw new Error(`route helper regressed: expected calibrate, received ${route.route}`)
@@ -297,15 +337,12 @@ async function runVisualScenario(): Promise<{
     throw new Error(`underspecified learning request must ask exactly one calibration question: ${textOf(assistant)}`)
   }
   messages.push(assistant)
-  messages.push({
-    role: 'user',
-    content: [
-      'I am a complete beginner and want the minimum concept first.',
-      'Explain why logistic regression uses a sigmoid instead of a straight line.',
-      'Use exactly one plot visual to show observed 0/1 points beside the sigmoid curve, with adjustable intercept and slope and a -intercept/slope decision-boundary metric.',
-      'Bind the selector to exactly one paired question about comparing an observed point with the curve. After the visual result, explain it in concise ordinary text and ask only that focused question. Do not call learning_state_update in this canary.',
-    ].join(' '),
-  })
+  messages.push(...await learnerTurn(agent, [
+    'I am a complete beginner and want the minimum concept first.',
+    'Explain why logistic regression uses a sigmoid instead of a straight line.',
+    'Use exactly one plot visual to show observed 0/1 points beside the sigmoid curve, with adjustable intercept and slope and a -intercept/slope decision-boundary metric.',
+    'Bind the selector to exactly one paired question about comparing an observed point with the curve. After the visual result, explain it in concise ordinary text and ask only that focused question. Do not call learning_state_update in this canary.',
+  ].join(' '), 2))
 
   let selector: ToolCall | undefined
   let visualCall: ToolCall | undefined
@@ -328,6 +365,7 @@ async function runVisualScenario(): Promise<{
         callId: call.id,
         name: call.function.name,
         arguments: selection,
+        agent,
       })
       if (selected.isError || (selected.value as { status?: unknown } | undefined)?.status !== 'selected') throw new Error(`learning_visual_select failed: ${JSON.stringify(selected)}`)
       messages.push({ role: 'assistant', content: assistant.content, tool_calls: assistant.tool_calls })
@@ -345,6 +383,7 @@ async function runVisualScenario(): Promise<{
         callId: call.id,
         name: call.function.name,
         arguments: parseToolArguments(call),
+        agent,
       })
       const expectedResult = { protocol: VISUAL_RESULT_PROTOCOL_V4, status: 'ready' }
       if (result.isError || JSON.stringify(result.value) !== JSON.stringify(expectedResult)) throw new Error(`learning_visual did not return the immediate ready result: ${JSON.stringify(result)}`)
@@ -365,6 +404,7 @@ async function runVisualScenario(): Promise<{
   if (scenario === undefined) throw new Error('parameter-relationship teaching scenario is missing')
   const teachingVerdict = gradeTeachingCandidate(scenario, capture)
   if (!teachingVerdict.passed) throw new Error(`real-model visual case failed the deterministic rubric: ${JSON.stringify(teachingVerdict.checks)}`)
+  await disposeAgent()
   return { messages, visual, selector, visualCall, result: resultValue, teachingVerdict }
 }
 

@@ -38,6 +38,9 @@ describe('V4.1 multi-turn grader/rubric sanity fixtures (not model-behavior evid
       'checkpoint-skip-is-strategy-evidence',
       'checkpoint-cancel-restores-conversation',
       'checkpoint-failure-falls-back-to-conversation',
+      'wrong-claim-is-corrected-not-endorsed',
+      'worked-example-fades-to-independence',
+      'explicit-answer-request-is-answered',
     ])
     expect(OFFLINE_TRAJECTORY_CANDIDATES.every(candidate => candidate.turns.length >= 6 && candidate.turns.length <= 12)).toBe(true)
     expect(gradeTeachingTrajectorySuite(OFFLINE_TRAJECTORY_CANDIDATES).every(verdict => verdict.passed)).toBe(true)
@@ -167,6 +170,43 @@ describe('V4.1 multi-turn grader/rubric sanity fixtures (not model-behavior evid
     expect(gradeTeachingTrajectorySuite(failed).find(item => item.caseId === 'checkpoint-failure-falls-back-to-conversation')?.passed).toBe(false)
   })
 
+  it('rejects agreeing with a wrong claim, and letting it stand uncorrected', () => {
+    const endorsed = changed('wrong-claim-is-corrected-not-endorsed', 1, { endorsedError: true })
+    const endorsedVerdict = gradeTeachingTrajectorySuite(endorsed)
+      .find(item => item.caseId === 'wrong-claim-is-corrected-not-endorsed')
+    expect(endorsedVerdict?.passed).toBe(false)
+    expect(endorsedVerdict?.checks.find(check => check.name === 'no-endorsed-error')?.passed).toBe(false)
+    expect(endorsedVerdict?.checks.find(check => check.name === 'corrects-learner-error-at-1')?.passed).toBe(false)
+
+    // Moving on without naming the error is not a correction either.
+    const ignored = changed('wrong-claim-is-corrected-not-endorsed', 1, { correctedError: false })
+    expect(gradeTeachingTrajectorySuite(ignored)
+      .find(item => item.caseId === 'wrong-claim-is-corrected-not-endorsed')?.passed).toBe(false)
+
+    // Endorsing an error anywhere fails the trace, not only on scripted turns.
+    const elsewhere = changed('transfer-ends-segment', 2, { endorsedError: true })
+    expect(gradeTeachingTrajectorySuite(elsewhere)
+      .find(item => item.caseId === 'transfer-ends-segment')?.passed).toBe(false)
+  })
+
+  it('rejects worked-example support that never fades as the learner succeeds', () => {
+    const stuckSupport = changed('worked-example-fades-to-independence', 3, { supportLevel: 2 })
+    const verdict = gradeTeachingTrajectorySuite(stuckSupport)
+      .find(item => item.caseId === 'worked-example-fades-to-independence')
+    expect(verdict?.passed).toBe(false)
+    expect(verdict?.checks.find(check => check.name === 'support-fades-with-success')?.passed).toBe(false)
+  })
+
+  it('rejects answering an explicit request for the answer with another question', () => {
+    const quizzed = changed('explicit-answer-request-is-answered', 1, {
+      decision: 'scaffold', focusQuestionCount: 1, hasScaffold: true,
+    })
+    const verdict = gradeTeachingTrajectorySuite(quizzed)
+      .find(item => item.caseId === 'explicit-answer-request-is-answered')
+    expect(verdict?.passed).toBe(false)
+    expect(verdict?.checks.find(check => check.name === 'answers-explicit-request-at-1')?.passed).toBe(false)
+  })
+
   it('reports explicit metric numerators and denominators', () => {
     const metrics = summarizeTeachingTrajectories(OFFLINE_TRAJECTORY_CANDIDATES)
     expect(metrics.focusedQuestionTurns).toBeGreaterThan(0)
@@ -183,5 +223,10 @@ describe('V4.1 multi-turn grader/rubric sanity fixtures (not model-behavior evid
     expect(metrics.sourceClaimTurns).toBeGreaterThan(0)
     expect(metrics.sourceAnchoredTurns).toBe(metrics.sourceClaimTurns)
     expect(metrics.unnecessaryVisualTurns).toBe(0)
+    expect(metrics.learnerErrorTurns).toBeGreaterThan(0)
+    expect(metrics.correctedErrorTurns).toBe(metrics.learnerErrorTurns)
+    expect(metrics.endorsedErrorTurns).toBe(0)
+    expect(metrics.answerRequestTurns).toBeGreaterThan(0)
+    expect(metrics.answeredRequestTurns).toBe(metrics.answerRequestTurns)
   })
 })

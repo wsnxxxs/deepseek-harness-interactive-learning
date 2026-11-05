@@ -181,28 +181,36 @@ describe('plan events through the model-facing tool', () => {
     const agent = { id: session.id, session } as never
     const disposeAgent = ctx.agents.register(agent)
     await disposeAgent
-    const run = (callId: string, event: unknown) => executeTool(ctx, {
+    const run = (callId: string, args: Record<string, unknown>) => executeTool(ctx, {
       callId,
       name: 'learning_state_update',
-      arguments: { action: 'update', event },
+      arguments: { action: 'update', ...args },
       agent,
     })
 
     const recorded = await run('plan-record', {
-      type: 'plan_observed',
-      objective: 'Read the notes and derive the chain rule',
-      steps: [
-        { id: 'skim', label: 'Skim chapter 2 for the composition rule' },
-        { id: 'derive', label: 'Derive it from the limit definition' },
-      ],
-      observation: { id: 'tool-plan-1', source: 'learner-message', summary: 'The learner asked for a route through the notes.' },
+      basis: 'The learner asked for a route through the notes.',
+      plan: {
+        objective: 'Read the notes and derive the chain rule',
+        steps: [
+          { id: 'skim', label: 'Skim chapter 2 for the composition rule' },
+          { id: 'derive', label: 'Derive it from the limit definition' },
+        ],
+      },
     })
     expect(recorded).toMatchObject({ isError: false, value: { status: 'updated', revision: 1 } })
 
+    // A step id that is not in the plan is rejected with the ids that are.
+    const unknownStep = await run('plan-advance-unknown', {
+      basis: 'The learner quoted the rule from chapter 2.',
+      planStepDone: 'chapter-2',
+    })
+    expect(unknownStep.isError).toBe(true)
+    expect(JSON.stringify(unknownStep.content)).toContain('planStepDone must be one of the plan step ids: skim, derive')
+
     const advanced = await run('plan-advance', {
-      type: 'plan_step_evidenced',
-      stepId: 'skim',
-      observation: { id: 'tool-plan-2', source: 'learner-message', summary: 'The learner quoted the rule from chapter 2.' },
+      basis: 'The learner quoted the rule from chapter 2.',
+      planStepDone: 'skim',
     })
     expect(advanced).toMatchObject({ isError: false, value: { status: 'updated', revision: 2 } })
     expect(ctx.learningActivities.learnerState(agent).plan?.steps.map(step => step.status))

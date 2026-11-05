@@ -1,29 +1,20 @@
 ---
 name: interactive-teaching
-description: Use in the Learning preset when a learning request needs detailed diagnosis, pressure handling, teaching-move, academic-integrity, visual, or supplied-material guidance beyond the standing teaching policy.
+description: Detailed tutoring playbooks for Learning mode. Load when the learner's level, goal, or time pressure is unclear; when a reply didn't land and you need a different move; when work may be graded or submitted; when the learner supplies files, slides, or notes to study; or before building a visual with visualize (choosing a kind, writing chart or field expressions, adding walkthrough frames).
 ---
 
-# Interactive Teaching Reference Router
+# Interactive teaching playbooks
 
-## Policy authority
+The Learning mode policy in your instructions decides how to teach. These references add detail for specific situations and never override it. Read only the one you need.
 
-The standing `learning:policy` injected from `src/teaching-policy.ts` is the single authoritative source for request routing, diagnosis, teaching moves, scaffolding, learner pressure, tool restraint, feedback, stopping, and academic integrity. Follow that policy throughout the lesson. This Skill only routes to detailed construction references; it must not restate, weaken, or override the standing policy.
+| Situation | Read |
+|---|---|
+| Unclear level, goal, or broad topic; a deadline or impatience | [references/diagnosis-and-pressure.md](references/diagnosis-and-pressure.md) |
+| Choosing a move: worked example, guided question, reflective pause, contrast, repair, transfer, or a study resource | [references/teaching-moves.md](references/teaching-moves.md) |
+| A grade, exam, submission, professor's AI policy, or assessed code or essay comes up | [references/academic-integrity.md](references/academic-integrity.md) |
+| The exchange is stalling, or you are unsure whether a question, hint, or praise is proportionate | [references/tone-and-failure-modes.md](references/tone-and-failure-modes.md) |
+| The learner supplied documents, PDFs, slides, or notes to study | [references/reference-materials.md](references/reference-materials.md) |
+| You decided a visual will help and need to pick its kind | [references/visual-routing.md](references/visual-routing.md) |
+| Building a less familiar visual: chart or field expressions, walkthrough frames, dense cross-references | [references/visual-protocol.md](references/visual-protocol.md) |
 
-## Progressive references
-
-Read only the references needed for the current turn:
-
-- Read [references/diagnosis-and-pressure.md](references/diagnosis-and-pressure.md) when the learner's level, failure mode, topic-vs-concept goal, deadline, or impatience changes the route.
-- Read [references/teaching-moves.md](references/teaching-moves.md) when choosing among direct explanation, `guided_discovery`, `worked_example`, `reflective_pause`, resource creation, or a representation change.
-- Read [references/academic-integrity.md](references/academic-integrity.md) when the learner mentions a grade, submission, exam, quiz, professor policy, or assessed coding/writing.
-- Read [references/tone-and-failure-modes.md](references/tone-and-failure-modes.md) when repairing a stalled exchange or checking that questions, hints, praise, and stopping remain proportionate.
-
-## Semantic visual references
-
-When the standing policy selects `learning_visual`, read [references/visual-routing.md](references/visual-routing.md) to select and construct the native semantic kind. Read [references/visual-protocol.md](references/visual-protocol.md) before emitting a less familiar payload, a computed plot, sequence frames, or dense cross-references.
-
-The routing reference, protocol reference, and tool schema—not this Skill—define the available native kinds, payload details, and limits.
-
-## Supplied-material references
-
-When files or other reference materials are present and the learner wants to study them, read [references/reference-materials.md](references/reference-materials.md). Use it for source/learner-instruction separation, stable source anchors, source mapping, and progressive concept selection. Then consult the visual references only if the standing policy calls for a visual representation.
+`visualize` and each `visual_<kind>` tool define the exact fields and limits; the visual references explain how to choose and build a visual that teaches.

@@ -116,8 +116,13 @@ describe('LearnerState reducer', () => {
     const transcript = renderLearnerStateTranscript(partial)
     expect(transcript).toContain('last_explanation:')
     expect(transcript).toContain('last_question:')
-    expect(transcript).toContain('current_misconception:')
-    expect(transcript).toContain('move_fingerprint:')
+    // The model reads its own approach labels back under the name it writes them.
+    expect(transcript).toContain('last_approach: "index-value:check:v1"')
+    expect(transcript).toContain('response_assessment: partial')
+    // A current misconception is still reducer state, but the transcript shows
+    // only the observed misconception list so a repaired belief is not
+    // presented as if it were still active.
+    expect(transcript).not.toContain('current_misconception')
 
     expect(() => reduceLearnerState(partial, {
       type: 'assistant_move_observed',
@@ -535,7 +540,7 @@ describe('LearnerState reducer', () => {
     })])
     expect(state.phase).toBe('repair')
     expect(state.nextMove).toBe('repair')
-    expect(renderLearnerStateTranscript(state)).toContain('failed_move: guided_discovery/unhelpful-hint/sign question')
+    expect(renderLearnerStateTranscript(state)).toContain('failed_approach: "sign-question-v1" (guided_discovery, unhelpful-hint, "sign question")')
     expect(parseLearnerStateSnapshot(serializeLearnerStateSnapshot(state), 'session-failed-move'))
       .toEqual(state)
   })
@@ -1155,6 +1160,46 @@ describe('lossless session-event snapshots', () => {
 })
 
 describe('compact V4.1 learner-state transcript', () => {
+  it('renders nothing until something has been observed, and nothing again after a reset', () => {
+    const fresh = createInitialLearnerState('session-empty')
+    expect(renderLearnerStateTranscript(fresh)).toBe('')
+
+    const observed = reduceLearnerState(fresh, {
+      type: 'urgency_observed',
+      urgency: 'later-pressure',
+      observation: observation('empty-urgency'),
+    })
+    // Only observed fields and the mastery stop signal appear; fresh-session
+    // defaults such as `goal: unknown` or `support_need: 0/5` are omitted.
+    expect(renderLearnerStateTranscript(observed)).toBe([
+      '<learner_state tentative="true">',
+      'urgency: later-pressure',
+      'mastery: unseen',
+      '</learner_state>',
+    ].join('\n'))
+
+    expect(renderLearnerStateTranscript(resetLearnerState(observed))).toBe('')
+  })
+
+  it('hides the synthetic fingerprint of a Host-recorded visual or checkpoint', () => {
+    const visual = reduceLearnerState(createInitialLearnerState('session-auto-move'), {
+      type: 'assistant_move_observed',
+      move: 'visual',
+      moveFingerprint: 'visual:call_00_abc',
+      observation: observation('auto-visual', 'assistant-output'),
+    })
+    expect(visual.moveFingerprint).toBe('visual:call_00_abc')
+    expect(renderLearnerStateTranscript(visual)).not.toContain('call_00_abc')
+
+    const chosen = reduceLearnerState(visual, {
+      type: 'assistant_move_observed',
+      move: 'explanation',
+      moveFingerprint: 'analogy:water-pipes',
+      observation: observation('model-move', 'assistant-output'),
+    })
+    expect(renderLearnerStateTranscript(chosen)).toContain('last_approach: "analogy:water-pipes"')
+  })
+
   it('pins the model-facing fields while excluding lifecycle and replay metadata', () => {
     const state = apply(
       createInitialLearnerState('private-session-id'),
@@ -1235,26 +1280,25 @@ describe('compact V4.1 learner-state transcript', () => {
     const transcript = renderLearnerStateTranscript(state)
 
     expect(transcript).toMatchInlineSnapshot(`
-      "<learner_state protocol=\"dsh-learning/learner-state@1\" tentative=\"true\">
-      goal: \"Understand why an index differs from the stored value\"
+      "<learner_state tentative="true">
+      goal: "Understand why an index differs from the stored value"
       request_kind: procedure
       level: intermediate
-      prior_knowledge: [\"array traversal\", \"loop invariants\"]
+      knows: ["array traversal", "loop invariants"]
       gap: notation
-      misconceptions: [\"treats the index as the stored value\"]
-      current_misconception: \"treats the index as the stored value\"
+      misconceptions: ["treats the index as the stored value"]
       readiness: can-reason
-      progress_signal: stuck
+      progress: stuck
       urgency: later-pressure
       support_need: 3/5
-      assessment_context: self-study
+      assessed: self-study
       mastery: emerging
       phase: practice
       next_move: complete
       response_assessment: correct
-      evidence: error/incorrect/independent/high: \"Confused i with values[i]\"
-      evidence: explanation/correct/independent/medium: \"Correctly identified the loop invariant\"
-      source_anchors: [\"chapter-2#indices\"]
+      evidence: error/incorrect/independent/high: "Confused i with values[i]"
+      evidence: explanation/correct/independent/medium: "Correctly identified the loop invariant"
+      source_anchors: ["chapter-2#indices"]
       </learner_state>"
     `)
     expect(transcript).not.toContain('private-session-id')
@@ -1339,7 +1383,7 @@ describe('compact V4.1 learner-state transcript', () => {
     }
 
     const transcript = renderLearnerStateTranscript(state, { maxTokens: 300 })
-    expect(transcript).toContain('prior_knowledge:')
+    expect(transcript).toContain('knows:')
     expect(transcript).toContain('misconceptions:')
     expect(transcript).toContain('source_anchors:')
     expect(estimateLearnerStateTokens(transcript)).toBeLessThanOrEqual(300)
@@ -1445,7 +1489,7 @@ describe('compact V4.1 learner-state transcript', () => {
     expect(transcript).toContain('goal:')
     expect(transcript).not.toContain('goal: ""')
     expect(transcript).toContain('request_kind: source-study')
-    expect(transcript).toContain('progress_signal: shutdown-risk')
+    expect(transcript).toContain('progress: shutdown-risk')
     expect(transcript).toContain('mastery: transfer')
   })
 })

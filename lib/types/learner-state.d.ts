@@ -310,9 +310,13 @@ export declare function foldLearnerStateSession(sessionId: string, events: reado
 /** A conservative tokenizer-free estimate suitable for enforcing a prompt budget. */
 export declare function estimateLearnerStateTokens(text: string): number;
 /**
- * Renders model-facing V4.1 state without lifecycle ids or raw event metadata.
- * Optional evidence is admitted by priority until the 100-300 token budget is
- * full; the XML-like envelope always remains closed and injection-safe.
+ * Renders the model-facing note without lifecycle ids, raw event metadata, or
+ * fields still at their fresh-session value. Key names match the
+ * `learning_state_update` vocabulary the model writes (`knows`, `progress`,
+ * `assessed`, approaches). Optional lines are admitted by priority until the
+ * 100-300 token budget is full; the XML-like envelope always remains closed
+ * and injection-safe.
+ * @returns the transcript, or an empty string when nothing has been observed.
  */
 export declare function renderLearnerStateTranscript(state: LearnerState, options?: {
     maxTokens?: number;

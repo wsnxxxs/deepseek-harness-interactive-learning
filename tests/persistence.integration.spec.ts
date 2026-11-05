@@ -92,15 +92,8 @@ describe('Learning state durable load order', () => {
       name: 'learning_state_update',
       arguments: {
         action: 'update',
-        event: {
-          type: 'goal_observed',
-          goal: 'Understand queue invariants',
-          observation: {
-            id: 'durable-goal-observation',
-            source: 'learner-message',
-            summary: 'The learner explicitly wants to understand queue invariants.',
-          },
-        },
+        basis: 'The learner explicitly wants to understand queue invariants.',
+        learner: { goal: 'Understand queue invariants' },
       },
       agent: originalAgent,
     })

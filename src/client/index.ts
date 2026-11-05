@@ -13,6 +13,8 @@ import { LearningToolView } from './LearningToolView.tsx'
 import { createLearningWaitStore } from './learning-waits.ts'
 import { subscribeLearningUiLifecycle } from './lifecycle.ts'
 import { en, zh } from './locales.ts'
+import { RECALL_FEEDBACK_PROTOCOL_V1 } from '../protocol.ts'
+import { RECALL_FEEDBACK_RPC_CHANNEL, RECALL_FEEDBACK_RPC_ENDPOINT } from '../recall-feedback.ts'
 
 export { ActivityRendererRegistry, activityRendererRegistry } from './ActivityRenderer.tsx'
 export { subscribeLearningUiLifecycle, type LearningUiLifecycleEvent } from './lifecycle.ts'
@@ -68,20 +70,15 @@ export function apply(ctx: LearningClientContext): void {
         || event.callId === undefined
         || event.cardId === undefined
         || event.status === undefined) return
-      void connection.rpc.call('/interactive-learning', 'recall/feedback', {
-        protocol: 'dsh-learning/recall-feedback@1',
+      // Best-effort: a rejected call or an explicit Host error never blocks
+      // the learner's click, and the rating stays in the local replay state.
+      void connection.rpc.call(RECALL_FEEDBACK_RPC_CHANNEL, RECALL_FEEDBACK_RPC_ENDPOINT, {
+        protocol: RECALL_FEEDBACK_PROTOCOL_V1,
         sessionId: event.sessionId,
         callId: event.callId,
         cardId: event.cardId,
         status: event.status,
-      }).then(result => {
-        // The bridge is intentionally best-effort for rendering. A rejected
-        // RPC or an explicit Host error never blocks the learner's click;
-        // both are deliberately left to the local replay projection.
-        if (!result.ok) return
-      }).catch(() => {
-        // The canonical rating is still retained in sessionStorage.
-      })
+      }).catch(() => {})
     }), 'interactive-learning: recall feedback bridge')
   })
 

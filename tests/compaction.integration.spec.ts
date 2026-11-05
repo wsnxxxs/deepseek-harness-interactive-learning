@@ -37,34 +37,22 @@ function agentFor(session: { id: Agent['id'] } & Agent['session']): Agent {
   return { id: session.id, session } as unknown as Agent
 }
 
+/** One batched `learning_state_update` call per learner turn, as the model writes them. */
 const OBSERVATIONS = [
   {
-    type: 'goal_observed',
-    goal: 'Understand why gradients vanish',
-    observation: {
-      id: 'compaction-goal',
-      source: 'learner-message',
-      summary: 'The learner stated the goal in their own words.',
-    },
+    action: 'update',
+    basis: 'The learner stated the goal in their own words.',
+    learner: { goal: 'Understand why gradients vanish' },
   },
   {
-    type: 'gap_observed',
-    gap: 'notation',
-    misconceptions: ['reads the product rule as a sum'],
-    observation: {
-      id: 'compaction-gap',
-      source: 'learner-message',
-      summary: 'The learner misread the derivative product as a sum.',
-    },
+    action: 'update',
+    basis: 'The learner misread the derivative product as a sum.',
+    learner: { gap: 'notation', misconceptions: ['reads the product rule as a sum'] },
   },
   {
-    type: 'progress_observed',
-    progressSignal: 'progressing',
-    observation: {
-      id: 'compaction-progress',
-      source: 'learner-message',
-      summary: 'The learner corrected the reading unaided.',
-    },
+    action: 'update',
+    basis: 'The learner corrected the reading unaided.',
+    learner: { progress: 'progressing' },
   },
 ] as const
 
@@ -85,7 +73,7 @@ describe('learner state survives message-surface compaction', () => {
     await disposeAgent
 
     // A realistic surface: ordinary turns interleaved with state observations.
-    for (const [index, event] of OBSERVATIONS.entries()) {
+    for (const [index, call] of OBSERVATIONS.entries()) {
       session.append('user/message', createUserMessage({
         content: [{ type: 'text', text: `Learner turn ${String(index)}` }],
         source: { kind: 'user' },
@@ -94,7 +82,7 @@ describe('learner state survives message-surface compaction', () => {
       const update = await executeTool(ctx, {
         callId: `compaction-update-${String(index)}`,
         name: 'learning_state_update',
-        arguments: { action: 'update', event },
+        arguments: call,
         agent,
       })
       expect(update.isError).toBe(false)
@@ -148,7 +136,7 @@ describe('learner state survives message-surface compaction', () => {
     await executeTool(ctx, {
       callId: 'compaction-loss-update',
       name: 'learning_state_update',
-      arguments: { action: 'update', event: OBSERVATIONS[0] },
+      arguments: OBSERVATIONS[0],
       agent,
     })
     const before = ctx.learningActivities.learnerState(agent)

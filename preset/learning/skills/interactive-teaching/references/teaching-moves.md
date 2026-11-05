@@ -1,25 +1,26 @@
 # Teaching moves
 
-Use this reference when the next move needs an explicit pedagogical shape. The move ontology is small and compositional; choose one move that changes what the learner can do next.
+Choose one move that changes what the learner can do next.
 
-## Move ontology
+## Moves
 
-- `explanation`: give the smallest concept or rule that unlocks the next step;
-- `guided_discovery`: use one scaffolded question or hint when the learner has the pieces and can assemble them;
-- `worked_example`: solve a parallel problem with the reasoning narrated, then hand the learner a nearby case;
-- `reflective_pause`: ask for a brief explanation, prediction, contrast, or fresh application when that evidence will change the next move;
-- `resource`: create the requested flashcards, study guide, outline, or quiz directly, using active recall and interleaving;
-- `visual`: show one relationship when seeing or manipulating it is materially clearer;
-- `repair`: isolate the observed error, add new information, and retry with a nearby case;
-- `transfer`: ask for or recognize an application in a new situation;
-- `checkpoint`: legacy wire name for an optional reflective pause that deliberately waits for one learner contribution.
+- **explanation**: the smallest idea or rule that unlocks the next step, with one concrete instance. Pair an abstract statement with an example right away.
+- **worked_example**: solve a case and say why each step is taken, then give a similar case. Fade support as the learner succeeds: next time leave them the last step, then two steps, then the whole problem. For novices this beats open-ended discovery.
+- **guided_discovery**: one scaffolded question when the learner has the pieces and only needs to assemble them. The hint narrows the search without containing the operation or the conclusion.
+- **reflective_pause**: ask the learner to produce something whose answer decides your next move: predict an outcome, explain why in their own words, or say what differs between two cases. Use `learning_checkpoint` only when you need that one short response before you can continue; otherwise ask in prose.
+- **contrast**: put two nearly identical cases side by side that differ only in the feature that matters, such as a right and a wrong solution, or two ideas the learner confuses. Contrasts make the critical feature visible.
+- **repair**: for a misconception, name the belief, show a case where it predicts the wrong result, give the correct model, then retry with a nearby case. Restating the right answer alone rarely displaces a wrong belief.
+- **transfer**: ask for, or recognise, an application in a new situation that is not a rerun of an earlier example. Success here ends the segment.
+- **resource**: when asked for flashcards, a study guide, an outline, or a quiz, make it directly. Prefer items that require recall, explanation, comparison, or application over term-and-definition pairs. Mix topics rather than grouping them, and suggest coming back after a gap instead of rereading.
+- **visual**: show one relationship when seeing or manipulating it is clearly better than prose.
 
-Legacy aliases such as `example` and `question` may appear in session history, but new state observations should prefer the explicit names above. A resource request is not a reason to force a question first. A visual or reflective pause is optional and must have ordinary-text fallback; skip, cancel, failure, or unavailable rendering must not block the lesson.
+## Changing course
 
-Use at most one rich move in a user turn: either a visual scaffold or a checkpoint wait. Do not stack both around the same explanation, and do not add a checkpoint after directly fulfilling a requested overview or study resource.
+- After a move fails, change the representation, not the wording: rule and example, symbols and numbers, words and picture, general and specific case, forward and backward reasoning.
+- If the learner is stuck twice on the same step, work a parallel case all the way through, then hand back a near copy.
+- If the learner gets it right quickly, skip ahead; do not run steps they already own.
+- Record a failed move with `learning_state_update` (`failedMove`), naming its approach, so later turns can avoid it.
 
-## One step and a stopping rule
+## Stopping
 
-Pair at most one focused question with a small scaffold. Do not hide an answer in the hint, and do not ask “what do you think?” without something concrete to inspect. Preserve the correct part of a partial response, name the missing piece, and choose a different representation after a failed explanation or hint. Record the failed move's representation and reason, not only its fingerprint, so the next move can genuinely differ.
-
-Stop a segment after independent fresh transfer: the learner explains, predicts, distinguishes, or applies the idea in a new case without the tutor carrying the reasoning. A sufficiently confident, correct, independent explanation or complete attempt may also close the current segment when it resolves the local goal; keep automatically inferred mastery `emerging` unless explicit fresh-context transfer was observed. Honor an explicit learner correction to the tentative mastery state. If the learner asks not to be quizzed further, use the correction path with `phase=complete` and `nextMove=complete` without inventing transfer evidence. State the evidence and offer a next direction, but do not append a ritual question or march through an unfinished plan.
+End the segment when the learner explains or applies the idea correctly on their own. Name what they did that shows it, offer one optional next direction, and stop. If they ask you to stop quizzing them, stop, and record it with `learning_state_update` (`action: "correct"`, `correction.stopQuestions: true`).

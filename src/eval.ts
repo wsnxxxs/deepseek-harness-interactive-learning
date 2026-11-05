@@ -589,6 +589,10 @@ export interface TeachingTrajectoryTurn {
   sourceAnchors?: readonly string[]
   hintFingerprint?: string
   genericPraise?: boolean
+  /** Whether the reply names the learner's error and shows why it fails. */
+  correctedError?: boolean
+  /** Whether the reply agrees with, or builds on, an incorrect learner claim. */
+  endorsedError?: boolean
   leakedAnswer?: boolean
   richTools?: readonly ('learning_visual' | 'learning_checkpoint')[]
   endedSegment?: boolean
@@ -624,6 +628,12 @@ export interface TeachingTrajectoryCase {
   gapRoutingAt?: Readonly<Record<number, TeachingGapKind>>
   /** Minimum plan steps that must still be outstanding when the segment ends. */
   stopsWithPlanRemaining?: number
+  /** Turns whose learner message makes an error the reply must correct, never endorse. */
+  learnerErrorAt?: readonly number[]
+  /** Worked example → fading: support must fall by at least this much as the learner succeeds. */
+  supportFading?: { fromTurn: number; toTurn: number; minimumDecrease: number }
+  /** Turns where the learner explicitly asks for the answer outside assessed work. */
+  answerRequestAt?: readonly number[]
 }
 
 export interface TeachingTrajectoryCandidate {
@@ -682,7 +692,7 @@ export const TEACHING_TRAJECTORY_CASES: readonly TeachingTrajectoryCase[] = [
   },
   {
     id: 'mid-lesson-impatience-accelerates',
-    rationale: 'A learner who has usable pieces but becomes impatient should get a narrower, faster scaffold.',
+    rationale: 'A learner who has usable pieces and grows impatient, without asking for the answer, should get a narrower, faster scaffold.',
     expectedDecisionAt: { 2: 'accelerate' },
     evidenceEligibleTurns: [1, 2, 3],
   },
@@ -741,6 +751,30 @@ export const TEACHING_TRAJECTORY_CASES: readonly TeachingTrajectoryCase[] = [
     expectedDecisionAt: { 1: 'fallback' },
     toolFailureTurn: 1,
   },
+  {
+    id: 'wrong-claim-is-corrected-not-endorsed',
+    rationale: 'A confident wrong claim is named and refuted with a contrast, never agreed with to keep the mood pleasant.',
+    learnerErrorAt: [1],
+    gapRoutingAt: { 1: 'concept' },
+    evidenceEligibleTurns: [1, 2, 3],
+    stopTurn: 3,
+  },
+  {
+    id: 'worked-example-fades-to-independence',
+    rationale: 'A procedure gap gets one fully worked example, then support fades step by step until the learner works a new form alone.',
+    gapRoutingAt: { 0: 'procedure' },
+    supportFading: { fromTurn: 0, toTurn: 3, minimumDecrease: 3 },
+    evidenceEligibleTurns: [2, 3, 4],
+    stopTurn: 4,
+  },
+  {
+    id: 'explicit-answer-request-is-answered',
+    rationale: 'In self-study, an explicit request for the answer gets the answer at once, with practice offered rather than imposed.',
+    answerRequestAt: [1],
+    expectedDecisionAt: { 1: 'direct' },
+    evidenceEligibleTurns: [1, 2, 3],
+    stopTurn: 3,
+  },
 ] as const
 
 function trajectoryCheck(
@@ -781,6 +815,8 @@ export function gradeTeachingTrajectory(
         && !turn.checkpointResult.leakedFutureContent)),
     'checkpoint completion restores ordinary conversation with no extra gate or leaked answer/future content',
   )
+
+  trajectoryCheck(checks, 'no-endorsed-error', turns.every(turn => turn.endorsedError !== true), 'a wrong learner claim is never agreed with or built on')
 
   const fingerprints = turns.flatMap(turn => turn.hintFingerprint === undefined ? [] : [turn.hintFingerprint])
   trajectoryCheck(checks, 'no-repeated-hint', new Set(fingerprints).size === fingerprints.length, 'support changes instead of repeating the same hint')
@@ -896,6 +932,36 @@ export function gradeTeachingTrajectory(
       `addresses-observed-gap-at-${turn}`,
       observed === gap && addressed === gap,
       `turn ${turn} must answer the ${gap} failure the learner displays, not a different one`,
+    )
+  }
+
+  for (const turn of scenario.learnerErrorAt ?? []) {
+    trajectoryCheck(
+      checks,
+      `corrects-learner-error-at-${turn}`,
+      turns[turn]?.correctedError === true && turns[turn]?.endorsedError !== true,
+      `turn ${turn} must name the learner's error and show why it fails, not agree with it`,
+    )
+  }
+
+  if (scenario.supportFading !== undefined) {
+    const { fromTurn, toTurn, minimumDecrease } = scenario.supportFading
+    const from = turns[fromTurn]?.supportLevel
+    const to = turns[toTurn]?.supportLevel
+    trajectoryCheck(
+      checks,
+      'support-fades-with-success',
+      from !== undefined && to !== undefined && from - to >= minimumDecrease,
+      `support must fall by at least ${minimumDecrease} from turn ${fromTurn} to ${toTurn} as the learner succeeds`,
+    )
+  }
+
+  for (const turn of scenario.answerRequestAt ?? []) {
+    trajectoryCheck(
+      checks,
+      `answers-explicit-request-at-${turn}`,
+      turns[turn]?.decision === 'direct' && turns[turn]?.focusQuestionCount === 0,
+      `turn ${turn} must give the requested answer directly instead of another question`,
     )
   }
 
@@ -1135,7 +1201,7 @@ export const OFFLINE_TRAJECTORY_CANDIDATES: readonly TeachingTrajectoryCandidate
     turns: [
       turn('Teach me why a negative slope descends.', 'Slope is vertical change divided by horizontal change. What sign does the vertical change have when x increases?', 'scaffold', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 1, hintFingerprint: 'rise-over-run-sign' }),
       turn('The vertical change is negative.', 'You identified the negative numerator. On a one-unit move right, where must the point move?', 'scaffold', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 1, progressSignal: 'progressing', mastery: 'emerging', usedLearnerEvidence: ['negative vertical change'], hintFingerprint: 'one-unit-right' }),
-      turn('Just tell me; I am running out of patience.', 'Your sign reasoning is already in place: a positive x move pairs with a negative y move. Apply that once to the point (0, 0): where is the next point?', 'accelerate', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 2, progressSignal: 'impatient', mastery: 'emerging', usedLearnerEvidence: ['negative numerator'], hintFingerprint: 'origin-application' }),
+      turn('This is taking forever; can we speed it up?', 'Your sign reasoning is already in place: a positive x move pairs with a negative y move. Apply that once to the point (0, 0): where is the next point?', 'accelerate', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 2, progressSignal: 'impatient', mastery: 'emerging', usedLearnerEvidence: ['negative numerator'], hintFingerprint: 'origin-application' }),
       turn('(1, -1).', 'Exactly that coordinate uses your negative vertical change; the line therefore descends as x grows.', 'transfer', { progressSignal: 'progressing', mastery: 'transfer', usedLearnerEvidence: ['(1, -1)'] }),
       turn('So -3 means down three for each one right.', 'That is the mechanism, stated in your own terms.', 'complete', { mastery: 'transfer' }),
       turn('Got it.', 'This segment is complete.', 'complete', { mastery: 'transfer', endedSegment: true }),
@@ -1241,6 +1307,45 @@ export const OFFLINE_TRAJECTORY_CANDIDATES: readonly TeachingTrajectoryCandidate
       turn('Finished.', 'The failed tool did not block the learning path.', 'complete', { mastery: 'transfer', endedSegment: true }),
     ],
   },
+  {
+    caseId: 'wrong-claim-is-corrected-not-endorsed',
+    turns: [
+      turn('Help me understand the gambler\'s fallacy.', 'A fair coin has no memory: each flip is independent of the ones before it. After five heads in a row, what is the chance the next flip is heads?', 'scaffold', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 1, hintFingerprint: 'coin-has-no-memory' }),
+      turn('Lower than 50%, because tails is due.', '"Tails is due" is the fallacy itself: it assumes the coin remembers the streak. The next flip is still 50% heads. Compare a brand-new coin that has never been flipped: is it "due" for anything?', 'scaffold', {
+        focusQuestionCount: 1, hasScaffold: true, supportLevel: 2, progressSignal: 'progressing',
+        observedGap: 'concept', addressedGap: 'concept', correctedError: true,
+        usedLearnerEvidence: ['tails is due'], hintFingerprint: 'contrast-new-coin',
+      }),
+      turn('No, a new coin has no history.', 'Right, and the streaked coin\'s history is just as irrelevant to its next flip, so heads stays at 50%.', 'scaffold', { supportLevel: 1, progressSignal: 'progressing', mastery: 'emerging', usedLearnerEvidence: ['a new coin has no history'] }),
+      turn('So ten reds in a row at roulette do not make black more likely.', 'Exactly: you carried the independence argument to a new game on your own.', 'transfer', { mastery: 'transfer', endedSegment: true, usedLearnerEvidence: ['ten reds in a row'] }),
+      turn('That makes sense now.', 'The rule to keep: independent events have no memory of streaks.', 'complete', { mastery: 'transfer', endedSegment: true }),
+      turn('Thanks.', 'This segment is complete.', 'complete', { mastery: 'transfer', endedSegment: true }),
+    ],
+  },
+  {
+    caseId: 'worked-example-fades-to-independence',
+    turns: [
+      turn('I keep getting lost solving 3x + 5 = 20.', 'Worked example first: 2x + 3 = 11. Subtract 3 from both sides, because that undoes the +3: 2x = 8. Divide both sides by 2, because that undoes the ×2: x = 4. Check: 2·4 + 3 = 11.', 'scaffold', {
+        supportLevel: 3, observedGap: 'procedure', addressedGap: 'procedure', hintFingerprint: 'worked:2x+3=11',
+      }),
+      turn('OK, I followed that.', 'Now yours, with the first step done for you: subtracting 5 turns 3x + 5 = 20 into 3x = 15. What undoes the ×3?', 'scaffold', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 2, progressSignal: 'progressing', hintFingerprint: 'faded:first-step-done' }),
+      turn('Divide both sides by 3, so x = 5.', 'Yes, and 3·5 + 5 = 20 checks it. The next one is all yours: 4x − 7 = 9.', 'scaffold', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 1, progressSignal: 'progressing', mastery: 'emerging', usedLearnerEvidence: ['divide both sides by 3'], hintFingerprint: 'faded:whole-problem' }),
+      turn('Add 7 to get 4x = 16, then divide by 4: x = 4.', 'Both steps are right and in the right order, with no help from me.', 'scaffold', { supportLevel: 0, progressSignal: 'progressing', mastery: 'emerging', usedLearnerEvidence: ['add 7', 'divide by 4'] }),
+      turn('And for x/2 + 1 = 6 I subtract 1 and multiply by 2, so x = 10.', 'That is a new form, and you undid each operation in reverse order on your own.', 'transfer', { mastery: 'transfer', endedSegment: true, usedLearnerEvidence: ['subtract 1 and multiply by 2'] }),
+      turn('Done.', 'The method to keep: undo the operations in reverse order, then check the result.', 'complete', { mastery: 'transfer', endedSegment: true }),
+    ],
+  },
+  {
+    caseId: 'explicit-answer-request-is-answered',
+    turns: [
+      turn('Teach me why the derivative of x^2 is 2x.', 'Start from the slope between x and x + h: ((x + h)^2 − x^2)/h. What does the numerator simplify to?', 'scaffold', { focusQuestionCount: 1, hasScaffold: true, supportLevel: 1, hintFingerprint: 'difference-quotient' }),
+      turn('I am studying on my own and short on time: just tell me the answer.', 'Sure: the numerator is 2xh + h^2, so the slope is 2x + h, and as h shrinks to 0 that leaves 2x. If you like, the same steps work on x^3 later.', 'direct', { supportLevel: 2, usedLearnerEvidence: ['just tell me the answer'] }),
+      turn('So the h term vanishes because h goes to zero.', 'Exactly: it is the only part of 2x + h that depends on h.', 'scaffold', { mastery: 'emerging', usedLearnerEvidence: ['the h term vanishes'] }),
+      turn('Then x^3 gives 3x^2 by the same cancellation.', 'Right: the expansion leaves 3x^2 plus terms that still carry h, and those vanish the same way.', 'transfer', { mastery: 'transfer', endedSegment: true, usedLearnerEvidence: ['x^3 gives 3x^2'] }),
+      turn('Great.', 'This segment is complete.', 'complete', { mastery: 'transfer', endedSegment: true }),
+      turn('Bye.', 'Good luck with the rest of the chapter.', 'complete', { mastery: 'transfer', endedSegment: true }),
+    ],
+  },
 ] as const
 
 export interface TeachingTrajectoryMetrics {
@@ -1264,6 +1369,11 @@ export interface TeachingTrajectoryMetrics {
   sourceAnchoredTurns: number
   noVisualExpectedTurns: number
   unnecessaryVisualTurns: number
+  learnerErrorTurns: number
+  correctedErrorTurns: number
+  endorsedErrorTurns: number
+  answerRequestTurns: number
+  answeredRequestTurns: number
 }
 
 /** Numerators and denominators stay explicit so percentages cannot hide missing opportunities. */
@@ -1293,6 +1403,11 @@ export function summarizeTeachingTrajectories(
     sourceAnchoredTurns: 0,
     noVisualExpectedTurns: 0,
     unnecessaryVisualTurns: 0,
+    learnerErrorTurns: 0,
+    correctedErrorTurns: 0,
+    endorsedErrorTurns: 0,
+    answerRequestTurns: 0,
+    answeredRequestTurns: 0,
   }
   for (const candidate of candidates) {
     const scenario = scenarioById.get(candidate.caseId)
@@ -1334,6 +1449,15 @@ export function summarizeTeachingTrajectories(
       if (scenario?.visualForbiddenTurns?.includes(index) === true) {
         metrics.noVisualExpectedTurns += 1
         if ((current.richTools ?? []).includes('learning_visual')) metrics.unnecessaryVisualTurns += 1
+      }
+      if (current.endorsedError === true) metrics.endorsedErrorTurns += 1
+      if (scenario?.learnerErrorAt?.includes(index) === true) {
+        metrics.learnerErrorTurns += 1
+        if (current.correctedError === true && current.endorsedError !== true) metrics.correctedErrorTurns += 1
+      }
+      if (scenario?.answerRequestAt?.includes(index) === true) {
+        metrics.answerRequestTurns += 1
+        if (current.decision === 'direct' && current.focusQuestionCount === 0) metrics.answeredRequestTurns += 1
       }
     }
     if (scenario?.supportEscalation !== undefined) {

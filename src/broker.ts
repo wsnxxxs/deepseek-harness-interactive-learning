@@ -49,6 +49,7 @@ import {
   type ObservableLearnerEvent,
 } from './learner-state.ts'
 import { registerInteractiveLearningSessionCompatibility } from './bootstrap.ts'
+import { RECALL_FEEDBACK_ROUTE_PATH, RECALL_FEEDBACK_RPC_ENDPOINT } from './recall-feedback.ts'
 
 // Register eagerly when the package is present. Persisted snapshots are also
 // optional log projections, so the compatibility path can retain older/newer
@@ -61,14 +62,39 @@ export const DEFAULT_LEARNING_CHECKPOINT_TIMEOUT_MS = 5 * 60_000
 
 type LearningAbortReason = 'session-aborted' | 'client-response-timeout' | 'plugin-disposed'
 
-type RecallRpcConnection = {
-  rpc: {
-    handle(
-      channel: string,
-      handler: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>,
-      options: { authority: 'trusted-host' },
-    ): () => Promise<void>
+/** The structural slice of the 0.2 Host Connection exact-route registry this broker uses. */
+type RecallFeedbackConnection = {
+  fetch?: {
+    register(route: {
+      path: string
+      methods: readonly 'POST'[]
+      requestBody: 'buffered'
+      fetch: (request: Request) => Promise<Response>
+    }): () => Promise<void>
   }
+}
+
+type RecallRpcResult =
+  | { ok: true; value: LearningRecallFeedbackResult }
+  | { ok: false; error: { code: string; message: string; details: { issues: string[] } } }
+
+// RecallDeck ratings reach the Host as one JSON RPC call on the shared `/api`
+// channel (see ./recall-feedback.ts). An exact Fetch route is the 0.2
+// Connection seam a third-party package can own without a generated Typert
+// Remote; it works on every carrier that serves `/api`, and Connection admits
+// only the owner Peer to it.
+export {
+  RECALL_FEEDBACK_ROUTE_PATH,
+  RECALL_FEEDBACK_RPC_CHANNEL,
+  RECALL_FEEDBACK_RPC_ENDPOINT,
+} from './recall-feedback.ts'
+
+function recallRpcFailure(code: string, message: string): RecallRpcResult {
+  return { ok: false, error: { code, message, details: { issues: [] } } }
+}
+
+function recallServerResponse(rpcId: string, result: RecallRpcResult): Response {
+  return Response.json({ type: 'server-response', rpcId, result })
 }
 
 class LearningWaitAbort extends Error {
@@ -119,6 +145,15 @@ export type LearningStateUpdateRequest =
       agent: Agent
       expectedRevision: number
       event: ObservableLearnerStateUpdate
+      events?: never
+    }
+  | {
+      /** One model call's observations, applied atomically as one snapshot. */
+      action: 'update'
+      agent: Agent
+      expectedRevision: number
+      events: readonly ObservableLearnerStateUpdate[]
+      event?: never
     }
   | {
       action: 'correct'
@@ -218,6 +253,19 @@ function pedagogicalStateFingerprint(state: LearnerState): string {
     ...pedagogicalState
   } = state
   return JSON.stringify(pedagogicalState)
+}
+
+/** Model-facing rejection for a call that would not change any note. */
+const UNCHANGED_LEARNER_STATE = 'nothing to record: these notes already match the learner state; call learning_state_update only when something new was observed'
+
+/** Reduce one call's observations in order; any failure leaves the state untouched. */
+function reduceLearnerStateEvents(
+  state: LearnerState,
+  events: readonly ObservableLearnerStateUpdate[],
+): LearnerState {
+  let next = state
+  for (const event of events) next = reduceLearnerState(next, event)
+  return next
 }
 
 function learnerObservationId(prefix: string, ...parts: string[]): string {
@@ -387,44 +435,55 @@ export class LearningActivityBroker extends Service {
       this.dropLearnerState(session)
     })
 
-    // Generic Connection is already the Host↔Client RPC carrier. Keep the
-    // recall endpoint package-private and let the broker enforce session
-    // ownership before recording any learner evidence.
+    // Connection carries the RecallDeck rating bridge as an exact `/api`
+    // route. (0.2's custom `connection.rpc.handle()` channels resolve the Web
+    // server from the Connection plugin's own scope, which does not inject
+    // it, so a package channel never mounts.) The broker still enforces
+    // session ownership before recording any learner evidence.
     ctx.inject(['connection'], (connectionCtx) => {
-      const connection = connectionCtx.get('connection') as RecallRpcConnection | undefined
-      if (connection === undefined) return
-      connectionCtx.effect(() => connection.rpc.handle(
-        '/interactive-learning',
-        async (endpoint: string, payload: unknown) => {
-          if (endpoint !== 'recall/feedback') {
-            return {
-              ok: false,
-              error: {
-                code: 'bad-request',
-                message: 'unknown interactive-learning RPC endpoint',
-                details: { issues: [] },
-              },
-            }
-          }
-          try {
-            const feedback = parseLearningRecallFeedbackV1(payload)
-            return { ok: true, value: this.recordRecallFeedback(feedback) }
-          } catch (cause) {
-            return {
-              ok: false,
-              error: {
-                code: 'bad-request',
-                message: cause instanceof Error ? cause.message : String(cause),
-                details: { issues: [] },
-              },
-            }
-          }
-        },
-        { authority: 'trusted-host' },
-      ),
-        'interactive-learning: recall feedback rpc',
-      )
+      const connection = connectionCtx.get('connection') as RecallFeedbackConnection | undefined
+      if (connection?.fetch === undefined) return
+      const routes = connection.fetch
+      connectionCtx.effect(() => routes.register({
+        path: RECALL_FEEDBACK_ROUTE_PATH,
+        methods: ['POST'],
+        requestBody: 'buffered',
+        fetch: request => this.recallFeedbackResponse(request),
+      }), 'interactive-learning: recall feedback route')
     })
+  }
+
+  /** Decode one Connection client-request envelope and answer with its server-response. */
+  private async recallFeedbackResponse(request: Request): Promise<Response> {
+    const mediaType = request.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase()
+    if (mediaType !== 'application/json') {
+      return new Response('content type must be application/json', { status: 415 })
+    }
+    let envelope: unknown
+    try {
+      envelope = await request.json()
+    } catch {
+      return new Response('body is not JSON', { status: 400 })
+    }
+    const message = typeof envelope === 'object' && envelope !== null && !Array.isArray(envelope)
+      ? envelope as Record<string, unknown>
+      : undefined
+    const rpcId = typeof message?.rpcId === 'string' && message.rpcId !== '' ? message.rpcId : 'invalid-request'
+    if (message?.type !== 'client-request' || rpcId === 'invalid-request') {
+      return recallServerResponse(rpcId, recallRpcFailure('bad-request', 'invalid client-request message'))
+    }
+    if (message.method !== RECALL_FEEDBACK_RPC_ENDPOINT) {
+      return recallServerResponse(rpcId, recallRpcFailure(
+        'bad-request',
+        `method ${JSON.stringify(message.method)} does not match endpoint ${JSON.stringify(RECALL_FEEDBACK_RPC_ENDPOINT)}`,
+      ))
+    }
+    try {
+      const feedback = parseLearningRecallFeedbackV1(message.payload)
+      return recallServerResponse(rpcId, { ok: true, value: this.recordRecallFeedback(feedback) })
+    } catch (cause) {
+      return recallServerResponse(rpcId, recallRpcFailure('bad-request', cause instanceof Error ? cause.message : String(cause)))
+    }
   }
 
   /** Diagnostics/test seam; no activity payloads or learner answers are exposed. */
@@ -472,31 +531,39 @@ export class LearningActivityBroker extends Service {
   }
 
   /** CAS mutation used exclusively by the internal, immediate state tool.
-   * Exact replays and a small set of additive observations may rebase once;
-   * replacement, correction, and reset operations remain strict CAS writes.
+   * One update may carry several observations from one model call; they reduce
+   * in order and commit as one snapshot, or not at all. Exact replays and
+   * purely additive observations may rebase once; replacement, correction,
+   * and reset operations remain strict CAS writes.
    */
   updateLearnerState(request: LearningStateUpdateRequest): LearningStateUpdateResult {
-    let current = this.learnerState(request.agent)
+    const current = this.learnerState(request.agent)
     if (!Number.isSafeInteger(request.expectedRevision) || request.expectedRevision < 0) {
       throw new TypeError('expectedRevision must be a non-negative safe integer')
     }
+    const updates: readonly ObservableLearnerStateUpdate[] | undefined = request.action !== 'update'
+      ? undefined
+      : request.events ?? [request.event]
+    if (updates !== undefined && updates.length === 0) {
+      throw new TypeError('a learner-state update needs at least one observation')
+    }
     if (current.revision !== request.expectedRevision) {
-      // A retried tool call can arrive after its own event was already
-      // committed. Reducing it against the latest snapshot verifies the
-      // fingerprint and turns that exact replay into an acknowledgement.
+      // A retried tool call can arrive after its own events were already
+      // committed. Reducing them against the latest snapshot verifies their
+      // fingerprints and turns that exact replay into an acknowledgement.
       // Conflicting reuse of an observation id still throws from the reducer.
-      if (request.action === 'update'
-        && current.appliedEventIds.some(item => item.id === request.event.observation.id)) {
-        const replay = reduceLearnerState(current, request.event)
+      if (updates !== undefined
+        && updates.every(event => current.appliedEventIds.some(item => item.id === event.observation.id))) {
+        const replay = reduceLearnerStateEvents(current, updates)
         if (replay === current) return { status: 'updated', revision: current.revision }
       }
-      if (request.action === 'update' && isSafeStaleLearnerStateUpdate(request.event)) {
-        // The event was not present in the latest fence. Only list additions
+      if (updates !== undefined && updates.every(isSafeStaleLearnerStateUpdate)) {
+        // The events were not present in the latest fence. Only list additions
         // without lifecycle side effects enter this path. Evidence and failed
         // moves can change phase/nextMove, so they remain strict CAS writes.
-        const rebased = reduceLearnerState(current, request.event)
+        const rebased = reduceLearnerStateEvents(current, updates)
         if (pedagogicalStateFingerprint(rebased) === pedagogicalStateFingerprint(current)) {
-          throw new Error('learning_state_update requires a substantive observable state change')
+          throw new Error(UNCHANGED_LEARNER_STATE)
         }
         this.appendLearnerState(request.agent, rebased, 'update')
         return { status: 'updated', revision: rebased.revision }
@@ -513,10 +580,13 @@ export class LearningActivityBroker extends Service {
       return { status: 'reset', revision: state.revision }
     }
 
-    const event: LearnerStateEvent = request.action === 'correct'
-      ? { type: 'state_corrected', correction: request.correction, observation: request.observation }
-      : request.event
-    const state = reduceLearnerState(current, event)
+    const state = request.action === 'correct'
+      ? reduceLearnerState(current, {
+          type: 'state_corrected',
+          correction: request.correction,
+          observation: request.observation,
+        })
+      : reduceLearnerStateEvents(current, updates as readonly ObservableLearnerStateUpdate[])
     // A durable replay after a broker refresh still reduces to the exact same
     // state via appliedEventIds. Acknowledge it without appending a snapshot.
     if (state === current) {
@@ -526,7 +596,7 @@ export class LearningActivityBroker extends Service {
       }
     }
     if (pedagogicalStateFingerprint(state) === pedagogicalStateFingerprint(current)) {
-      throw new Error('learning_state_update requires a substantive observable state change')
+      throw new Error(UNCHANGED_LEARNER_STATE)
     }
     this.appendLearnerState(request.agent, state, request.action === 'correct' ? 'correction' : 'update')
     return {

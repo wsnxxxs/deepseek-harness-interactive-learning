@@ -20,6 +20,10 @@ export declare function classifyLearnIntent(input: string): LearnIntentDecision;
 export declare function isLearnIntent(input: string): boolean;
 /** Whether a message explicitly closes or switches away from a learning segment. */
 export declare function isLearningBoundary(input: string): boolean;
-/** Compact standing text; detailed diagnosis and moves stay in references. */
+/**
+ * Human-readable summary of the classifier boundary, kept as public API.
+ * It is no longer part of the standing prompt: the classifier's decision
+ * reaches the model through the per-turn `learning:turn-route` note.
+ */
 export declare const LEARNING_INTENT_POLICY: string;
 //# sourceMappingURL=learn-intent.d.ts.map

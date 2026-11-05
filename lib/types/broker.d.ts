@@ -5,6 +5,7 @@ import { type LearnerState, type LearnerStateCorrection, type LearnerStateEvent,
 export declare const INTERACTIVE_LEARNING_PACKAGE = "@dsh-portable/interactive-learning";
 export declare const DEFAULT_LEARNING_WAIT_TIMEOUT_MS: number;
 export declare const DEFAULT_LEARNING_CHECKPOINT_TIMEOUT_MS: number;
+export { RECALL_FEEDBACK_ROUTE_PATH, RECALL_FEEDBACK_RPC_CHANNEL, RECALL_FEEDBACK_RPC_ENDPOINT, } from './recall-feedback.ts';
 declare module '@deepseek-ai/cordis' {
     interface Context {
         learningActivities: LearningActivityBroker;
@@ -39,6 +40,14 @@ export type LearningStateUpdateRequest = {
     agent: Agent;
     expectedRevision: number;
     event: ObservableLearnerStateUpdate;
+    events?: never;
+} | {
+    /** One model call's observations, applied atomically as one snapshot. */
+    action: 'update';
+    agent: Agent;
+    expectedRevision: number;
+    events: readonly ObservableLearnerStateUpdate[];
+    event?: never;
 } | {
     action: 'correct';
     agent: Agent;
@@ -89,6 +98,8 @@ export declare class LearningActivityBroker extends Service {
     private readonly observers;
     private disposed;
     constructor(ctx: Context);
+    /** Decode one Connection client-request envelope and answer with its server-response. */
+    private recallFeedbackResponse;
     /** Diagnostics/test seam; no activity payloads or learner answers are exposed. */
     get pendingCount(): number;
     /** Diagnostics/test seam; state content remains private to its session. */
@@ -102,8 +113,10 @@ export declare class LearningActivityBroker extends Service {
     /** Render only the bounded, model-facing projection of the current state. */
     learnerStateTranscript(agent: Agent, maxTokens?: number): string;
     /** CAS mutation used exclusively by the internal, immediate state tool.
-     * Exact replays and a small set of additive observations may rebase once;
-     * replacement, correction, and reset operations remain strict CAS writes.
+     * One update may carry several observations from one model call; they reduce
+     * in order and commit as one snapshot, or not at all. Exact replays and
+     * purely additive observations may rebase once; replacement, correction,
+     * and reset operations remain strict CAS writes.
      */
     updateLearnerState(request: LearningStateUpdateRequest): LearningStateUpdateResult;
     /** Subscribe to answer-free lifecycle metadata. */

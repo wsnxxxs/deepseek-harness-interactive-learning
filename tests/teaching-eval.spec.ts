@@ -107,7 +107,7 @@ describe('non-blocking teaching behavior evaluation', () => {
     expect(verdicts.find(item => item.caseId === 'transfer-stop')?.passed).toBe(true)
   })
 
-  it('keeps the single standing policy and reference-routing Skill aligned with the V4 semantic visual model', () => {
+  it('keeps the standing policy and reference-routing Skill aligned with the rubric the eval grades', () => {
     const root = resolve(import.meta.dirname, '..')
     const agent = readFileSync(join(root, 'src/agent.ts'), 'utf8')
     const skillRoot = join(root, 'preset/learning/skills/interactive-teaching')
@@ -115,48 +115,47 @@ describe('non-blocking teaching behavior evaluation', () => {
     const visualRouting = readFileSync(join(skillRoot, 'references/visual-routing.md'), 'utf8')
     const visualProtocol = readFileSync(join(skillRoot, 'references/visual-protocol.md'), 'utf8')
     const referenceMaterials = readFileSync(join(skillRoot, 'references/reference-materials.md'), 'utf8')
+    const teachingMoves = readFileSync(join(skillRoot, 'references/teaching-moves.md'), 'utf8')
+    // Each graded behaviour has a standing rule the model actually receives.
     for (const phrase of [
-      'Route first',
-      'calibration',
-      'complete/full overview',
-      'Each response makes one cognitive move',
-      'Ask at most one focused learner question',
-      'Never repeat a hint, analogy, question, or explanation fingerprint',
-      'Stop after independent fresh transfer',
-      'Ordinary conversation is the default',
-      'Use a visual only when one relationship is materially clearer',
+      'Current turn route', // routing, calibration, and overview shape live in the route note
+      'One move per reply',
+      'Ask at most one question per reply',
+      'Never reuse a hint, analogy, or question that already failed',
+      'End the segment once they have explained or applied the idea correctly on their own',
+      'If they ask for the answer, a full overview, or a study resource, give it directly',
+      'Never agree with a wrong claim to be kind',
+      'At most one per user turn: a visual',
       'learning_state_update',
-      'move fingerprint',
     ]) {
       expect(LEARNING_TEACHING_POLICY).toContain(phrase)
     }
     for (const phrase of [
-      'single authoritative source',
-      'must not restate, weaken, or override',
-      'Semantic visual references',
-      'Supplied-material references',
+      'never override it',
       'references/visual-routing.md',
       'references/visual-protocol.md',
       'references/reference-materials.md',
-      'tool schema—not this Skill—define',
+      '`visualize` and each `visual_<kind>` tool define the exact fields and limits',
     ]) {
       expect(skill).toContain(phrase)
     }
     for (const phrase of [
-      '`timeline`',
-      '`formula_steps`',
-      '`study_map`',
-      '`recall_deck`',
+      '`chart` → `visual_chart`',
+      '`timeline` → `visual_timeline`',
+      '`derivation` → `visual_derivation`',
+      '`document_map` → `visual_document_map`',
+      '`flashcards` → `visual_flashcards`',
       '3→4→2 fully connected network has 12 + 8 = 20 edges',
       'Do not turn formula recall into an arbitrary exponent slider',
     ]) {
       expect(visualRouting).toContain(phrase)
     }
     for (const phrase of [
-      'Plots accept static points',
+      'Charts accept static points',
       'parameter-derived metrics',
+      'normpdf((x - mu)/sigma)/sigma',
       'Never send HTML, SVG markup, Mermaid, Markdown diagrams, JavaScript, or executable code',
-      'prerequisites, eras, and sequence focus ids must reference declared ids',
+      'prerequisites, eras, and walkthrough focus ids must reference declared ids',
     ]) {
       expect(visualProtocol).toContain(phrase)
     }
@@ -166,6 +165,9 @@ describe('non-blocking teaching behavior evaluation', () => {
       'Keep stable human-readable anchors',
     ]) {
       expect(referenceMaterials).toContain(phrase)
+    }
+    for (const phrase of ['Fade support as the learner succeeds', 'name the belief, show a case where it predicts the wrong result', 'correction.stopQuestions']) {
+      expect(teachingMoves).toContain(phrase)
     }
     expect(agent).toContain("import { LEARNING_TEACHING_POLICY } from './teaching-policy.ts'")
     expect(agent).toContain('text: LEARNING_TEACHING_POLICY')

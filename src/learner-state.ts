@@ -1745,9 +1745,36 @@ function transcriptText(lines: readonly TranscriptLine[]): string {
 }
 
 /**
- * Renders model-facing V4.1 state without lifecycle ids or raw event metadata.
- * Optional evidence is admitted by priority until the 100-300 token budget is
- * full; the XML-like envelope always remains closed and injection-safe.
+ * Whether any pedagogical field differs from a fresh session. A fresh or
+ * just-reset state renders no transcript at all: a block of `unknown` values
+ * would cost every model step and tell the model nothing.
+ */
+function hasLearnerObservations(state: LearnerState): boolean {
+  const initial = createInitialLearnerState(state.sessionId)
+  return (Object.keys(initial) as Array<keyof LearnerState>)
+    .filter(key => key !== 'sessionId' && key !== 'revision' && key !== 'appliedEventIds')
+    .some(key => JSON.stringify(state[key]) !== JSON.stringify(initial[key]))
+}
+
+/**
+ * The Host records a rendered visual or a finished checkpoint with a
+ * synthetic `visual:<callId>` / `checkpoint:<callId>:…` fingerprint. It
+ * identifies the call, not a teaching approach, so the transcript omits it.
+ */
+function isHostRecordedFingerprint(state: LearnerState): boolean {
+  return state.moveFingerprint !== null
+    && (state.lastMove === 'visual' || state.lastMove === 'checkpoint')
+    && state.moveFingerprint.startsWith(`${state.lastMove}:`)
+}
+
+/**
+ * Renders the model-facing note without lifecycle ids, raw event metadata, or
+ * fields still at their fresh-session value. Key names match the
+ * `learning_state_update` vocabulary the model writes (`knows`, `progress`,
+ * `assessed`, approaches). Optional lines are admitted by priority until the
+ * 100-300 token budget is full; the XML-like envelope always remains closed
+ * and injection-safe.
+ * @returns the transcript, or an empty string when nothing has been observed.
  */
 export function renderLearnerStateTranscript(
   state: LearnerState,
@@ -1756,8 +1783,9 @@ export function renderLearnerStateTranscript(
   const requestedBudget = options.maxTokens ?? DEFAULT_TRANSCRIPT_TOKEN_BUDGET
   if (!Number.isFinite(requestedBudget)) throw new TypeError('maxTokens must be finite')
   const maxTokens = Math.max(100, Math.min(300, Math.floor(requestedBudget)))
+  if (!hasLearnerObservations(state)) return ''
   const envelope: TranscriptLine[] = [
-    { order: 0, priority: Infinity, text: `<learner_state protocol="${LEARNER_STATE_PROTOCOL}" tentative="true">` },
+    { order: 0, priority: Infinity, text: '<learner_state tentative="true">' },
     { order: 1000, priority: Infinity, text: '</learner_state>' },
   ]
   const accepted = [...envelope]
@@ -1769,23 +1797,22 @@ export function renderLearnerStateTranscript(
     return true
   }
 
-  // Small-budget core: these short fields retain the next-move signal while
-  // leaving room to crop a CJK goal. No scalar line is unconditionally required.
+  // Small-budget core: mastery is the segment's stop signal and always shows;
+  // the other short lines retain the next-move signal while leaving room to
+  // crop a CJK goal.
   const core: TranscriptLine[] = [
-    { order: 20, priority: 100, text: `request_kind: ${state.requestKind}` },
-    { order: 50, priority: 95, text: `gap: ${state.gap}` },
-    { order: 80, priority: 100, text: `progress_signal: ${state.progressSignal}` },
-    { order: 100, priority: 95, text: `support_need: ${state.supportLevel}/5` },
     { order: 120, priority: 100, text: `mastery: ${state.mastery}` },
   ]
+  if (state.requestKind !== 'unknown') core.push({ order: 20, priority: 100, text: `request_kind: ${state.requestKind}` })
+  if (state.gap !== 'unknown') core.push({ order: 50, priority: 95, text: `gap: ${state.gap}` })
+  if (state.progressSignal !== 'unknown') core.push({ order: 80, priority: 100, text: `progress: ${state.progressSignal}` })
+  if (state.supportLevel > 0) core.push({ order: 100, priority: 95, text: `support_need: ${state.supportLevel}/5` })
   for (const line of core.sort((left, right) => right.priority - left.priority)) admit(line)
   if (state.masteryBasis === 'user-correction') {
     admit({ order: 121, priority: 100, text: 'mastery_basis: user-correction' })
   }
 
-  if (state.goal === null) {
-    admit({ order: 10, priority: 100, text: 'goal: unknown' })
-  } else {
+  if (state.goal !== null) {
     // Find the longest safe prefix that fits the actual token budget. This is
     // deliberately code-point based so surrogate pairs are never split.
     const goalLength = Math.min(96, [...state.goal].length)
@@ -1794,22 +1821,25 @@ export function renderLearnerStateTranscript(
     }
   }
 
-  const optional: TranscriptLine[] = [
-    { order: 30, priority: 78, text: `level: ${state.level}` },
-    { order: 70, priority: 82, text: `readiness: ${state.readiness}` },
-    { order: 90, priority: 86, text: `urgency: ${state.urgency}` },
-    { order: 110, priority: 76, text: `assessment_context: ${state.assessmentContext}` },
-    { order: 125, priority: 92, text: `phase: ${state.phase}` },
-    { order: 130, priority: 90, text: `next_move: ${state.nextMove}` },
-    { order: 135, priority: 88, text: `response_assessment: ${state.learnerResponseAssessment}` },
-  ]
+  const optional: TranscriptLine[] = []
+  if (state.level !== 'unknown') optional.push({ order: 30, priority: 78, text: `level: ${state.level}` })
+  if (state.readiness !== 'unknown') optional.push({ order: 70, priority: 82, text: `readiness: ${state.readiness}` })
+  if (state.urgency !== 'unknown') optional.push({ order: 90, priority: 86, text: `urgency: ${state.urgency}` })
+  if (state.assessmentContext !== 'unknown') {
+    optional.push({ order: 110, priority: 76, text: `assessed: ${state.assessmentContext}` })
+  }
+  if (state.phase !== 'orient') optional.push({ order: 125, priority: 92, text: `phase: ${state.phase}` })
+  if (state.nextMove !== 'calibrate') optional.push({ order: 130, priority: 90, text: `next_move: ${state.nextMove}` })
+  if (state.learnerResponseAssessment !== 'no-evidence') {
+    optional.push({ order: 135, priority: 88, text: `response_assessment: ${state.learnerResponseAssessment}` })
+  }
   if (state.priorKnowledge.length) {
     // Keep compact orientation memory beside the current move after long
     // evidence and multi-step source-study turns fill the transcript budget.
     optional.push({
       order: 40,
       priority: 100,
-      text: `prior_knowledge: ${safeList(state.priorKnowledge, 48, 3)}`,
+      text: `knows: ${safeList(state.priorKnowledge, 48, 3)}`,
     })
   }
   if (state.misconceptions.length) {
@@ -1819,24 +1849,21 @@ export function renderLearnerStateTranscript(
       text: `misconceptions: ${safeList(state.misconceptions, 48, 3)}`,
     })
   }
-  if (state.currentMisconception !== null) {
-    optional.push({ order: 61, priority: 94, text: `current_misconception: ${safeQuoted(state.currentMisconception, 48)}` })
-  }
   if (state.lastExplanationSummary !== null) {
     optional.push({ order: 170, priority: 95, text: `last_explanation: ${safeQuoted(state.lastExplanationSummary, 48)}` })
   }
   if (state.lastQuestion !== null) {
     optional.push({ order: 180, priority: 96, text: `last_question: ${safeQuoted(state.lastQuestion, 48)}` })
   }
-  if (state.moveFingerprint !== null) {
-    optional.push({ order: 190, priority: 97, text: `move_fingerprint: ${safeQuoted(state.moveFingerprint, 64)}` })
+  if (state.moveFingerprint !== null && !isHostRecordedFingerprint(state)) {
+    optional.push({ order: 165, priority: 97, text: `last_approach: ${safeQuoted(state.moveFingerprint, 64)}` })
   }
   state.failedMoves.slice(-2).forEach((item, index) => {
-    const representation = item.representation === undefined ? '' : `/${item.representation}`
+    const representation = item.representation === undefined ? '' : `, ${safeQuoted(item.representation, 32)}`
     optional.push({
       order: 192 + index,
       priority: 99 - index,
-      text: `failed_move: ${item.move}/${item.failureReason}${representation}: ${safeQuoted(item.summary, 36)}`,
+      text: `failed_approach: ${safeQuoted(item.fingerprint, 40)} (${item.move}, ${item.failureReason}${representation})`,
     })
   })
   const recentEvidence = state.evidence.slice(-4)

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { configDefaults, defineConfig } from 'vitest/config'
 import { resolve } from 'node:path'
 
 export default defineConfig({
@@ -9,5 +9,7 @@ export default defineConfig({
   },
   test: {
     restoreMocks: true,
+    // Agent worktrees live under .claude/; never collect their copies of the suite.
+    exclude: [...configDefaults.exclude, '**/.claude/**'],
   },
 })

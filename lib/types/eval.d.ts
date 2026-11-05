@@ -103,6 +103,10 @@ export interface TeachingTrajectoryTurn {
     sourceAnchors?: readonly string[];
     hintFingerprint?: string;
     genericPraise?: boolean;
+    /** Whether the reply names the learner's error and shows why it fails. */
+    correctedError?: boolean;
+    /** Whether the reply agrees with, or builds on, an incorrect learner claim. */
+    endorsedError?: boolean;
     leakedAnswer?: boolean;
     richTools?: readonly ('learning_visual' | 'learning_checkpoint')[];
     endedSegment?: boolean;
@@ -144,6 +148,16 @@ export interface TeachingTrajectoryCase {
     gapRoutingAt?: Readonly<Record<number, TeachingGapKind>>;
     /** Minimum plan steps that must still be outstanding when the segment ends. */
     stopsWithPlanRemaining?: number;
+    /** Turns whose learner message makes an error the reply must correct, never endorse. */
+    learnerErrorAt?: readonly number[];
+    /** Worked example → fading: support must fall by at least this much as the learner succeeds. */
+    supportFading?: {
+        fromTurn: number;
+        toTurn: number;
+        minimumDecrease: number;
+    };
+    /** Turns where the learner explicitly asks for the answer outside assessed work. */
+    answerRequestAt?: readonly number[];
 }
 export interface TeachingTrajectoryCandidate {
     caseId: string;
@@ -180,6 +194,11 @@ export interface TeachingTrajectoryMetrics {
     sourceAnchoredTurns: number;
     noVisualExpectedTurns: number;
     unnecessaryVisualTurns: number;
+    learnerErrorTurns: number;
+    correctedErrorTurns: number;
+    endorsedErrorTurns: number;
+    answerRequestTurns: number;
+    answeredRequestTurns: number;
 }
 /** Numerators and denominators stay explicit so percentages cannot hide missing opportunities. */
 export declare function summarizeTeachingTrajectories(candidates: readonly TeachingTrajectoryCandidate[], scenarios?: readonly TeachingTrajectoryCase[]): TeachingTrajectoryMetrics;
