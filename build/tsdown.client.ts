@@ -9,18 +9,31 @@
  * loaders register each real stylesheet as a watch dependency.
  *
  * Standalone copy of DeepSeek Harness `packages/client/tsdown.client.ts` at
- * 0.2.2-rc.1. This package builds outside the monorepo (see
- * scripts/build-package.mjs and tsdown.config.ts), so the monorepo-only
- * imports are restated or dropped here:
+ * 0.2.2-rc.1. This repository builds outside the monorepo (see
+ * scripts/build-package.mjs and each package's tsdown.config.ts), so the
+ * monorepo-only imports are restated or dropped here:
  * - `PLATFORM_MODULES` / `PRELOADED_CLIENT_EXTERNALS` are copied from
  *   `packages/client/web/src/platform.ts`;
  * - `optionalStringArray` is copied from `packages/client/modules/src/client/manifest.ts`;
  * - the package-asset pipeline (`src/client/assets/`), the static-linked and
  *   dual-client faces, experimental-input isolation, and the repository's
- *   `DSH_CLIENT_*` build-environment defines are not used by this package and
- *   are omitted;
- * - `clientBundle` keeps this package's `(id, libEntry)` call shape and reads
- *   the manifest from the package root.
+ *   `DSH_CLIENT_*` build-environment defines are not used here and are omitted;
+ * - `clientBundle` keeps the `(id, libEntry)` call shape and reads the manifest
+ *   from the calling package's root (`packageRoot`, default the repository
+ *   root package).
+ *
+ * Additions for this pnpm workspace:
+ * - `conditions` prepends export conditions in every face, so a package can
+ *   inline a sibling workspace package from its TypeScript source (the
+ *   `dsh-portable-source` condition) — its CSS Modules then compile through
+ *   this preset under the consuming package's id;
+ * - `client: false` builds only the Node half, for a package with no Client
+ *   plugin entry yet; `browserLibrary` emits an ESM browser entry (such as a
+ *   React embedding surface) with the same CSS handling;
+ * - CSS Module class hashes are computed from package-relative stylesheet
+ *   paths (lightningcss `projectRoot`), and the CSS virtual ids rolldown prints
+ *   into a bundle are rewritten package-relative, so committed output does not
+ *   depend on where the repository is checked out.
  */
 import { readFile, stat, utimes } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
@@ -130,30 +143,80 @@ function browserSourcePath(source: string, sourcemapPath: string): string {
  * chains those tsc maps, with original source content, into the plugin map.
  * @param id - plugin id (package name), stamped into the __ModuleLoader__.load
  * handoff and onto the injected style tags; must match the package manifest.
- * @param libEntry - node-half entries.
- * @param options - phase placement, lib overrides, companion Node configs, and per-file Client banner.
+ * @param libEntry - node-half entries (an array, or output name → input file).
+ * @param options - package root, source conditions, phase placement, lib
+ * overrides, companion Node configs, and per-file Client banner.
  * @returns ENV-selected tsdown config for the current build face.
  */
 export function clientBundle(
   id: string,
-  libEntry: readonly string[],
+  libEntry: LibEntry,
   options: ClientBundleOptions = {},
 ): BuildFaceConfig {
-  const manifest = readPackageManifest(REPOSITORY_ROOT)
-  if (manifest.name !== id) {
-    throw new Error(`tsdown: clientBundle id ${JSON.stringify(id)} does not match package name ${JSON.stringify(manifest.name)}`)
-  }
-  const lib = clientLibraryConfig(manifest, libEntry, options.lib)
+  const packageRoot = options.packageRoot ?? REPOSITORY_ROOT
+  const manifest = packageManifestFor(id, packageRoot, 'clientBundle')
+  const conditions = options.conditions ?? []
+  const lib = clientLibraryConfig(manifest, libEntry, conditions, options.lib)
   return ({ env }) => {
     const face = buildFace(env?.DSH_BUILD_FACE)
-    const clientEntry = face === undefined ? 'src/client/index.ts' : 'lib/types/client/index.js'
-    const client = clientConfig(manifest, clientEntry, options.clientBanner)
     const node = [lib, ...(options.companions ?? [])]
+    if (options.client === false) {
+      if (face === 'host') return options.hostPhase === true ? node : [SKIP_WORKSPACE_BUILD]
+      if (face === 'client') return options.hostPhase === true ? [SKIP_WORKSPACE_BUILD] : node
+      return node
+    }
+    const clientEntry = face === undefined ? 'src/client/index.ts' : 'lib/types/client/index.js'
+    const client = clientConfig(manifest, packageRoot, clientEntry, conditions, options.clientBanner)
     if (face === 'host') return options.hostPhase === true ? node : [SKIP_WORKSPACE_BUILD]
     if (face === 'client') return options.hostPhase === true ? [client] : [...node, client]
     return [...node, client]
   }
 }
+
+/**
+ * An ESM browser library entry — for example a React embedding surface that
+ * other Client bundles inline. Its CSS compiles exactly as in the Client
+ * bundle, stamped with this package's id; the package's production
+ * dependencies stay imports and everything else is bundled.
+ * @param id - package name; must match the package manifest.
+ * @param entry - output name → input file.
+ * @param options - package root and export conditions resolved before the defaults.
+ * @returns one tsdown config emitting `lib/<name>.js`.
+ */
+export function browserLibrary(
+  id: string,
+  entry: Readonly<Record<string, string>>,
+  options: { readonly packageRoot?: string; readonly conditions?: readonly string[] } = {},
+): UserConfig {
+  const packageRoot = options.packageRoot ?? REPOSITORY_ROOT
+  const manifest = packageManifestFor(id, packageRoot, 'browserLibrary')
+  const conditions = options.conditions ?? []
+  let externals: readonly RegExp[] | undefined
+  const isProductionDependency = (specifier: string): boolean =>
+    matchesSpecifier(externals ??= productionExternals(manifest), specifier)
+  return {
+    name: `${id}/${Object.keys(entry).join('+')}`,
+    entry: { ...entry },
+    outDir: 'lib',
+    format: ['esm'],
+    platform: 'browser',
+    target: 'es2024',
+    fixedExtension: false,
+    dts: false,
+    clean: false,
+    deps: {
+      neverBundle: isProductionDependency,
+      alwaysBundle: (specifier: string) => !isBuiltin(specifier) && !isProductionDependency(specifier),
+    },
+    ...(conditions.length === 0 ? {} : {
+      inputOptions: { resolve: { conditionNames: [...conditions, 'import', 'browser', 'default'] } },
+    }),
+    plugins: [...cssPlugins(id, packageRoot), packageRelativeCssIds(packageRoot)],
+  }
+}
+
+/** Node-half entries: input files, or output name → input file. */
+type LibEntry = readonly string[] | Readonly<Record<string, string>>
 
 /**
  * Select arbitrary package-local configs only during the Client pass.
@@ -167,6 +230,15 @@ export function clientOnly(configs: readonly UserConfig[]): BuildFaceConfig {
 }
 
 interface ClientBundleOptions {
+  /** Root of the package whose config calls this preset; defaults to the repository root package. */
+  readonly packageRoot?: string
+  /**
+   * Export conditions resolved before the defaults in every build face, e.g.
+   * the workspace source condition that inlines a sibling package from source.
+   */
+  readonly conditions?: readonly string[]
+  /** `false` builds only the Node half (the package has no Client plugin entry yet). */
+  readonly client?: boolean
   /** Emit the Node-side artifacts during the Host pass instead of the Client pass. */
   readonly hostPhase?: boolean
   /** Additional Node-side configs emitted alongside the package library. */
@@ -188,7 +260,8 @@ function buildFace(value: unknown): BuildFace {
 
 function clientLibraryConfig(
   manifest: PackageManifest,
-  libEntry: readonly string[],
+  libEntry: LibEntry,
+  conditions: readonly string[],
   overrides: UserConfig = {},
 ): UserConfig {
   let externals: readonly RegExp[] | undefined
@@ -196,7 +269,13 @@ function clientLibraryConfig(
     matchesSpecifier(externals ??= productionExternals(manifest), specifier)
   return {
     name: manifest.name,
-    entry: [...libEntry],
+    entry: Array.isArray(libEntry) ? [...libEntry] : { ...libEntry as Readonly<Record<string, string>> },
+    // The Node half inlines only package-local modules (every third-party
+    // import is a production dependency or a builtin), so stating one list for
+    // import and require resolution cannot re-resolve an inlined dependency.
+    ...(conditions.length === 0 ? {} : {
+      inputOptions: { resolve: { conditionNames: [...conditions, 'import', 'node', 'default'] } },
+    }),
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',
@@ -246,6 +325,18 @@ function readPackageManifest(packageDir: string): PackageManifest {
     throw new Error(`tsdown: ${manifestPath} declares no string package name`)
   }
   return parsed as PackageManifest
+}
+
+/**
+ * Read the calling package's manifest and check it names the bundle id.
+ * @throws {Error} when the manifest is unreadable or names another package.
+ */
+function packageManifestFor(id: string, packageDir: string, preset: string): PackageManifest {
+  const manifest = readPackageManifest(packageDir)
+  if (manifest.name !== id) {
+    throw new Error(`tsdown: ${preset} id ${JSON.stringify(id)} does not match package name ${JSON.stringify(manifest.name)}`)
+  }
+  return manifest
 }
 
 /**
@@ -351,7 +442,9 @@ function asyncChunkRequirePlugin(): TsdownPlugin {
 
 function clientConfig(
   manifest: PackageManifest,
+  packageRoot: string,
   entry: string,
+  conditions: readonly string[],
   clientBanner?: (fileName: string) => string | undefined,
 ): UserConfig {
   const id = manifest.name
@@ -385,6 +478,7 @@ function clientConfig(
     inputOptions: {
       resolve: {
         conditionNames: [
+          ...conditions,
           (process.env.NODE_ENV ?? 'production') === 'development' ? 'development' : 'production',
           'browser', 'import', 'module', 'default',
         ],
@@ -422,68 +516,7 @@ function clientConfig(
           + '(type-only imports are erased and never reach this gate)',
         )
       },
-    }, tscSourceMapPlugin(), asyncChunkRequirePlugin(), {
-      name: 'dsh-css-modules-inline',
-      resolveId(source: string, importer: string | undefined) {
-        if (!source.endsWith('.module.css')) return null
-        const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
-        return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
-      },
-      async load(virtualId: string) {
-        if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
-        // The virtual id otherwise hides the physical stylesheet from Rolldown's watch graph.
-        this.addWatchFile(fileId)
-        const source = await readFile(fileId)
-        const { code, exports: cssExports } = transform({
-          filename: fileId,
-          code: source,
-          cssModules: { pattern: '[hash]_[local]' },
-          minify: true,
-        })
-        // lightningcss does not guarantee a stable iteration order for its
-        // exports, so an unsorted map makes every rebuild rewrite the committed
-        // client bundle with an identical-but-reordered class table. This
-        // package ships lib/ for direct GitHub installs, where that churn buries
-        // real changes in the diff.
-        const classMap: Record<string, string> = {}
-        const exportEntries = Object.entries(cssExports ?? {})
-          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-        for (const [local, exp] of exportEntries) classMap[local] = exp.name
-        return styleInjectionModule(id, fileId, JSON.stringify(code.toString()), classMap)
-      },
-    }, {
-      name: 'dsh-css-text-inline',
-      resolveId(source: string, importer: string | undefined) {
-        if (!source.endsWith(`.css${INLINE_CSS_QUERY}`)) return null
-        const stylesheet = source.slice(0, -INLINE_CSS_QUERY.length)
-        const abs = importer !== undefined ? sourceAssetPath(stylesheet, importer) : stylesheet
-        return INLINE_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
-      },
-      async load(virtualId: string) {
-        if (!virtualId.startsWith(INLINE_CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(INLINE_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
-        this.addWatchFile(fileId)
-        const source = await readFile(fileId)
-        const { code } = transform({ filename: fileId, code: source, minify: true })
-        return `export default ${JSON.stringify(code.toString())};`
-      },
-    }, {
-      name: 'dsh-css-global-inline',
-      resolveId(source: string, importer: string | undefined) {
-        if (!source.endsWith('.css') || source.endsWith('.module.css')) return null
-        const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
-        return GLOBAL_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
-      },
-      async load(virtualId: string) {
-        if (!virtualId.startsWith(GLOBAL_CSS_VIRTUAL_PREFIX)) return null
-        const fileId = virtualId.slice(GLOBAL_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
-        this.addWatchFile(fileId)
-        const source = await readFile(fileId)
-        const { code } = transform({ filename: fileId, code: source, minify: true })
-        return styleInjectionModule(id, fileId, JSON.stringify(code.toString()))
-      },
-    }],
+    }, tscSourceMapPlugin(), asyncChunkRequirePlugin(), ...cssPlugins(id, packageRoot), packageRelativeCssIds(packageRoot)],
     outputOptions: {
       entryFileNames: 'client.js',
       // The imported source basename becomes the published chunk name; package
@@ -502,6 +535,121 @@ function clientConfig(
       },
       footer: 'return module.exports; } });',
       intro: 'var module = { exports: {} }; var exports = module.exports;',
+    },
+  }
+}
+
+/**
+ * The CSS loaders every browser output of a package shares: `x.module.css`
+ * yields its hashed class map and injects a tagged style at module
+ * execution, `x.css?inline` exports compiled text, and any other `.css`
+ * import injects a tagged global style. Style tags are stamped with `id`.
+ * Class hashes derive from the stylesheet's path relative to `packageRoot`,
+ * so they do not depend on the checkout location.
+ * @param id - the owning package's plugin id.
+ * @param packageRoot - the owning package's root directory.
+ */
+export function cssPlugins(id: string, packageRoot: string): TsdownPlugin[] {
+  return [{
+    name: 'dsh-css-modules-inline',
+    resolveId(source: string, importer: string | undefined) {
+      if (!source.endsWith('.module.css')) return null
+      const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
+      return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+    },
+    async load(virtualId: string) {
+      if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
+      const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+      // The virtual id otherwise hides the physical stylesheet from Rolldown's watch graph.
+      this.addWatchFile(fileId)
+      const source = await readFile(fileId)
+      const { code, exports: cssExports } = transform({
+        filename: fileId,
+        code: source,
+        cssModules: { pattern: '[hash]_[local]' },
+        // `[hash]` hashes the stylesheet path; relative to the package root it
+        // is the same in every checkout, so committed class names are stable.
+        projectRoot: packageRoot,
+        minify: true,
+      })
+      // lightningcss does not guarantee a stable iteration order for its
+      // exports, so an unsorted map makes every rebuild rewrite the committed
+      // client bundle with an identical-but-reordered class table. This
+      // package ships lib/ for direct GitHub installs, where that churn buries
+      // real changes in the diff.
+      const classMap: Record<string, string> = {}
+      const exportEntries = Object.entries(cssExports ?? {})
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      for (const [local, exp] of exportEntries) classMap[local] = exp.name
+      return styleInjectionModule(id, fileId, JSON.stringify(code.toString()), classMap)
+    },
+  }, {
+    name: 'dsh-css-text-inline',
+    resolveId(source: string, importer: string | undefined) {
+      if (!source.endsWith(`.css${INLINE_CSS_QUERY}`)) return null
+      const stylesheet = source.slice(0, -INLINE_CSS_QUERY.length)
+      const abs = importer !== undefined ? sourceAssetPath(stylesheet, importer) : stylesheet
+      return INLINE_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+    },
+    async load(virtualId: string) {
+      if (!virtualId.startsWith(INLINE_CSS_VIRTUAL_PREFIX)) return null
+      const fileId = virtualId.slice(INLINE_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+      this.addWatchFile(fileId)
+      const source = await readFile(fileId)
+      const { code } = transform({ filename: fileId, code: source, minify: true })
+      return `export default ${JSON.stringify(code.toString())};`
+    },
+  }, {
+    name: 'dsh-css-global-inline',
+    resolveId(source: string, importer: string | undefined) {
+      if (!source.endsWith('.css') || source.endsWith('.module.css')) return null
+      const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
+      return GLOBAL_CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
+    },
+    async load(virtualId: string) {
+      if (!virtualId.startsWith(GLOBAL_CSS_VIRTUAL_PREFIX)) return null
+      const fileId = virtualId.slice(GLOBAL_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+      this.addWatchFile(fileId)
+      const source = await readFile(fileId)
+      const { code } = transform({ filename: fileId, code: source, minify: true })
+      return styleInjectionModule(id, fileId, JSON.stringify(code.toString()))
+    },
+  }]
+}
+
+/** A CSS virtual id as rolldown prints it (raw NUL or escaped `\0`) around an absolute stylesheet path. */
+const ABSOLUTE_CSS_VIRTUAL_ID = /(\0|\\0)(dsh-(?:global-|inline-)?css):((?:[A-Za-z]:[\\/]|\/)[^\r\n"'`]*?\.css\.mjs)/g
+
+/**
+ * Rewrite absolute CSS virtual ids under `packageRoot` into package-relative,
+ * forward-slash ids. Ids outside the package are left for the published-path
+ * purity gate to reject.
+ * @param packageRoot - the owning package's root directory.
+ */
+export function packageRelativeVirtualIds(packageRoot: string): (code: string) => string {
+  const root = resolvePath(packageRoot).replaceAll('\\', '/').replace(/\/+$/, '')
+  return code => code.replace(ABSOLUTE_CSS_VIRTUAL_ID, (match, marker: string, prefix: string, path: string) => {
+    // Inside a JSON string every backslash is escaped; normalize either spelling.
+    const normalized = path.replaceAll('\\\\', '/').replaceAll('\\', '/')
+    if (!normalized.startsWith(`${root}/`)) return match
+    return `${marker}${prefix}:${normalized.slice(root.length + 1)}`
+  })
+}
+
+/**
+ * Keep machine-local CSS virtual ids (the `//#region` markers rolldown prints
+ * for each stylesheet module) out of committed and published bundles.
+ * @param packageRoot - the owning package's root directory.
+ */
+export function packageRelativeCssIds(packageRoot: string): TsdownPlugin {
+  const rewrite = packageRelativeVirtualIds(packageRoot)
+  return {
+    name: 'dsh-css-package-relative-ids',
+    generateBundle(_options, outputBundle) {
+      for (const file of Object.values(outputBundle)) {
+        if (file.type === 'chunk') file.code = rewrite(file.code)
+        else if (typeof file.source === 'string') file.source = rewrite(file.source)
+      }
     },
   }
 }

@@ -1,0 +1,22 @@
+/* A complete Host alias set, standing in for the app theme the visual tokens
+   layer on (`--dsw-alias-*`). Shared by every browser fixture page. */
+:root {
+  color-scheme: light;
+  font-family: Inter, "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --dsw-alias-bg-layer-1: #ffffff;
+  --dsw-alias-bg-layer-2: #ffffff;
+  --dsw-alias-bg-layer-3: #f7f8fc;
+  --dsw-alias-bg-module-platform: #eef2ff;
+  --dsw-alias-border-l1: #e4e7ec;
+  --dsw-alias-border-l2: #d7dce5;
+  --dsw-alias-label-primary: #171a21;
+  --dsw-alias-label-secondary: #555e6e;
+  --dsw-alias-label-tertiary: #858d9c;
+  --dsw-alias-label-error: #b42318;
+  --dsw-alias-label-success: #157f58;
+  --dsw-alias-state-business-primary: #2f73ea;
+  --dsw-alias-state-success-primary: #19a77b;
+  --dsw-alias-state-error-primary: #e5524d;
+  --dsw-alias-state-warn-primary: #f0642f;
+  --dsw-alias-brand-primary: #2f73ea;
+}

@@ -36,12 +36,12 @@ import {
 } from '../protocol.ts'
 import { envelopeOf, LearningInteraction } from './LearningComposer.tsx'
 import type { LearningQuestionWait } from './learning-waits.ts'
-import { LearningMarkdown, MarkdownLabelsProvider, markdownLabelsOf } from './markdown.tsx'
+import { LocalizedMarkdown, MarkdownLabelsProvider, markdownLabelsOf } from '@dsh-portable/visual/react'
 import css from './LearningActivity.module.css'
 import { learningScope } from './tokens.ts'
 import { emitLearningCallLifecycle, emitLearningUiLifecycle } from './lifecycle.ts'
 import { LearningVisual } from './LearningVisual.tsx'
-import { LearningVisualV4, type LearningVisualV4Labels } from './visuals/index.tsx'
+import { LearningVisualV4, type LearningVisualV4Labels } from './visuals.ts'
 import type { LearningLocaleKey } from './locales.ts'
 
 /**
@@ -528,7 +528,7 @@ function LearningFallback({
       {reason === undefined ? null : <p className={css.fallbackReason}>{reason}</p>}
       {body === undefined
         ? (plain === undefined || plain === '' ? null : <p className={css.visualTextFallback}>{plain}</p>)
-        : <div className={css.fallbackText}><LearningMarkdown text={body} /></div>}
+        : <div className={css.fallbackText}><LocalizedMarkdown text={body} /></div>}
     </div>
   )
 }
@@ -727,7 +727,7 @@ function LearningToolSurface({ phase, block, callId, t, useLearningWaits, learni
     }
     return (
       <div className={css.legacyReveal} {...learningScope} data-learning-result={v2Response.action}>
-        <LearningMarkdown text={definition.feedback.explanation} />
+        <LocalizedMarkdown text={definition.feedback.explanation} />
         {definition.feedback.answer === undefined ? null : <strong>{definition.feedback.answer}</strong>}
       </div>
     )

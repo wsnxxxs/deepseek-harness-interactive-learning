@@ -1,0 +1,5 @@
+# The repository root is the Learning plugin (`@dsh-portable/interactive-learning`)
+# and keeps its install URL. `packages/*` holds the plugins it is built on, each
+# installable on its own (`#path:/packages/<name>`).
+packages:
+  - packages/*

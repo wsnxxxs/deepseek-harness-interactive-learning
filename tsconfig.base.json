@@ -1,0 +1,23 @@
+{
+  // Compiler options shared by every package of the workspace. A package
+  // resolves a sibling workspace package through that package's
+  // `dsh-portable-source` export condition (its TypeScript source); the
+  // consuming project references the sibling, so tsc type-checks against the
+  // sibling's own emitted declarations instead of recompiling its sources.
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "customConditions": ["dsh-portable-source"],
+    "jsx": "react-jsx",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
+  }
+}

@@ -1,0 +1,107 @@
+{
+  "name": "@dsh-portable/visual",
+  "version": "0.1.0",
+  "description": "Semantic, accessible native visuals for DeepSeek Harness",
+  "private": true,
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wsnxxxs/deepseek-harness-interactive-learning.git",
+    "directory": "packages/visual"
+  },
+  "homepage": "https://github.com/wsnxxxs/deepseek-harness-interactive-learning/tree/main/packages/visual",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "dsh-portable-source": "./src/index.ts",
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./protocol": {
+      "dsh-portable-source": "./src/protocol/index.ts",
+      "types": "./lib/types/protocol/index.d.ts",
+      "default": "./lib/protocol.js"
+    },
+    "./react": {
+      "dsh-portable-source": "./src/react.ts",
+      "types": "./lib/types/react.d.ts",
+      "default": "./lib/react.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "lib/*.js.map",
+    "lib/types/index.d.ts",
+    "lib/types/protocol/index.d.ts",
+    "lib/types/protocol/checks.d.ts",
+    "lib/types/protocol/content.d.ts",
+    "lib/types/protocol/document.d.ts",
+    "lib/types/protocol/expression.d.ts",
+    "lib/types/protocol/model.d.ts",
+    "lib/types/react.d.ts",
+    "lib/types/client/markdown.d.ts",
+    "lib/types/client/tokens.d.ts",
+    "lib/types/client/visuals/index.d.ts",
+    "lib/types/client/visuals/core/labels.d.ts",
+    "lib/types/index.d.ts.map",
+    "lib/types/protocol/index.d.ts.map",
+    "lib/types/protocol/checks.d.ts.map",
+    "lib/types/protocol/content.d.ts.map",
+    "lib/types/protocol/document.d.ts.map",
+    "lib/types/protocol/expression.d.ts.map",
+    "lib/types/protocol/model.d.ts.map",
+    "lib/types/react.d.ts.map",
+    "lib/types/client/markdown.d.ts.map",
+    "lib/types/client/tokens.d.ts.map",
+    "lib/types/client/visuals/index.d.ts.map",
+    "lib/types/client/visuals/core/labels.d.ts.map",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node ../../scripts/build-package.mjs",
+    "bundle": "pnpm run build",
+    "check": "node --check lib/index.js && node --check lib/protocol.js && node --check lib/react.js",
+    "test:source": "vitest run",
+    "test": "pnpm run test:source && pnpm run test:package",
+    "test:package:purity": "node ../../tests/package-purity.mjs lib",
+    "test:package": "pnpm run build && node tests/package-lifecycle.mjs",
+    "package:prepare": "pnpm run build && pnpm run test:package:purity && node ../../scripts/assert-package-output.mjs",
+    "prepack": "pnpm run package:prepare",
+    "prepublishOnly": "pnpm run package:prepare"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-client-ui-primitives": "*",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-client-ui-primitives": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.2-rc.1",
+    "@testing-library/react": "^16.1.0",
+    "@types/node": "^22.20.0",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "jsdom": "^26.0.0",
+    "katex": "^0.16.47",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsdown": "^0.22.14",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "visualization"
+  ],
+  "license": "MIT"
+}

@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
-import { basename, dirname, join, relative, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { basename, join, relative, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   assertManifestDeclarationFiles,
   declarationMapClosure,
   publicDeclarationClosure,
 } from './declaration-closure.mjs'
+import { invokedPackageRoot, repositoryRoot } from './workspace.mjs'
 
-const defaultPackageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
+const defaultPackageRoot = repositoryRoot
 
 async function collectFiles(root) {
   const files = []
@@ -75,5 +76,6 @@ export async function assertPackageOutput(packageRoot = defaultPackageRoot) {
 
 const invokedPath = process.argv[1] === undefined ? undefined : pathToFileURL(resolve(process.argv[1])).href
 if (invokedPath === import.meta.url) {
-  console.log(JSON.stringify(await assertPackageOutput(), null, 2))
+  // The package whose `pnpm run` script invoked this check, or an explicit directory.
+  console.log(JSON.stringify(await assertPackageOutput(invokedPackageRoot(process.argv[2])), null, 2))
 }

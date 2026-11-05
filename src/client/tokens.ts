@@ -1,11 +1,10 @@
 /**
  * Design-token scope for every learning surface.
  *
- * Importing this module loads `tokens.module.css`, which declares the shared
- * type ramp, spacing, radii, tones, focus ring and motion on the unhashed
- * `[data-learning-scope]` selector. Spreading {@link learningScope} onto a root
- * element opts its whole subtree into that scale, across both CSS Modules.
+ * Learning surfaces (the checkpoint, the legacy activity replay and the tool
+ * view) share the visual package's single token sheet: spreading
+ * {@link learningScope} onto a root element marks it `data-visual-scope`,
+ * which opts its subtree into the shared type ramp, spacing, tones, focus ring
+ * and motion.
  */
-import './tokens.module.css'
-
-export const learningScope = { 'data-learning-scope': '' } as const
+export { visualScope as learningScope } from '@dsh-portable/visual/react'

@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
+  assertNoBuildTimeWorkspaceImports,
   assertPublishedChunkReachability,
   assertPublishedPathPurity,
   assertWebClientInjectRoster,
@@ -151,8 +152,16 @@ try {
     sourceTypeClosure,
     'source lib/types must contain exactly the public declaration and map closure',
   )
-  assert.equal(sourceDeclarations.length, 16, 'source build must retain exactly 16 public declarations')
-  assert.equal(sourceDeclarationMaps.length, 16, 'source build must retain exactly 16 public declaration maps')
+  // The manifest's `files` whitelist names every public declaration and map
+  // (the build asserts it equals the emitted closure); the source build must
+  // retain exactly those.
+  const listedDeclarations = sourceManifest.files.filter(path => path.startsWith('lib/types/') && path.endsWith('.d.ts'))
+  const listedDeclarationMaps = sourceManifest.files.filter(path => path.startsWith('lib/types/') && path.endsWith('.d.ts.map'))
+  assert.deepEqual(sourceDeclarations, [...listedDeclarations].sort(), 'source build must retain exactly the listed public declarations')
+  assert.deepEqual(sourceDeclarationMaps, [...listedDeclarationMaps].sort(), 'source build must retain exactly the listed public declaration maps')
+  // The visual core is inlined at build time; the installed package never imports it.
+  const sourceWorkspaceImports = await assertNoBuildTimeWorkspaceImports(join(packageRoot, 'lib'), sourceManifest)
+  assert.deepEqual(sourceWorkspaceImports.forbidden, ['@dsh-portable/visual'])
 
   const packRoot = join(smokeRoot, 'pack')
   await mkdir(packRoot, { recursive: true })
@@ -184,6 +193,7 @@ try {
   run('tar', ['-xf', localOperand(tarball), '-C', localOperand(extractionRoot)], { cwd: smokeRoot })
   const packedPackage = join(extractionRoot, 'package')
   const tarballPurity = await assertPublishedPathPurity(join(packedPackage, 'lib'), { checkoutRoot: repositoryRoot })
+  await assertNoBuildTimeWorkspaceImports(join(packedPackage, 'lib'), sourceManifest)
 
   const manifest = JSON.parse(await readFile(join(packedPackage, 'package.json'), 'utf8'))
   assertWebClientInjectRoster(manifest)

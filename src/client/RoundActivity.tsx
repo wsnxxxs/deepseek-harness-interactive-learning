@@ -1,4 +1,4 @@
-import { LearningMarkdown } from './markdown.tsx'
+import { LocalizedMarkdown } from '@dsh-portable/visual/react'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { useEffect, useReducer, useRef, useState } from 'react'
 import type { LearningActivityV2, LearningJson } from '../protocol.ts'
@@ -55,7 +55,7 @@ function ProcessVisual({ activity, final }: { activity: LearningActivityV2; fina
       <span className={css.roundNode}>{activity.seq + 1}</span>
       <div>
         <h3>{frame.title}</h3>
-        {frame.content === undefined ? null : <LearningMarkdown text={frame.content} />}
+        {frame.content === undefined ? null : <LocalizedMarkdown text={frame.content} />}
       </div>
     </section>
   )
@@ -300,7 +300,7 @@ export function RoundActivity({
         <>
           <section className={css.roundFeedback} data-verdict={activity.feedback.verdict}>
             {activity.feedback.learnerEcho === undefined ? null : <p>{activity.feedback.learnerEcho}</p>}
-            <LearningMarkdown text={activity.feedback.explanation} />
+            <LocalizedMarkdown text={activity.feedback.explanation} />
             {activity.feedback.answer === undefined ? null : <strong>{activity.feedback.answer}</strong>}
           </section>
           {state.status === 'completed' ? null : (

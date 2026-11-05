@@ -1,4 +1,4 @@
-import { LearningMarkdown } from './markdown.tsx'
+import { LocalizedMarkdown } from '@dsh-portable/visual/react'
 import { useState } from 'react'
 import type { LearningJson, StructureItemV1 } from '../protocol.ts'
 import type { ActivityRendererProps } from './types.ts'
@@ -11,7 +11,7 @@ function Item({ item, side }: { item?: StructureItemV1; side: 'left' | 'right' }
   return (
     <div className={css.compareItem} data-side={side}>
       <strong>{item.label}</strong>
-      {item.detail === undefined ? null : <LearningMarkdown text={item.detail} />}
+      {item.detail === undefined ? null : <LocalizedMarkdown text={item.detail} />}
     </div>
   )
 }

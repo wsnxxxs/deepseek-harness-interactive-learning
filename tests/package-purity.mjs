@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { readFile, readdir } from 'node:fs/promises'
-import { basename, dirname, extname, relative, resolve } from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { basename, dirname, extname, join, relative, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { buildTimeWorkspaceDependencies, repositoryRoot } from '../scripts/workspace.mjs'
 
 // Require the first path-segment character so CSS such as `content:\"\"`
 // cannot be mistaken for a Windows drive path ending at an escaped quote.
@@ -24,6 +25,14 @@ export const EXPECTED_WEB_CLIENT_INJECT = Object.freeze([
   '@deepseek-ai/dsh-client-ui-user-questions',
   '@deepseek-ai/dsh-client-connection',
 ])
+
+/**
+ * Every workspace package's audited web client roster. A package absent here
+ * must not declare a `dsh.client` roster at all until one is audited.
+ */
+export const AUDITED_WEB_CLIENT_INJECT = Object.freeze({
+  '@dsh-portable/interactive-learning': EXPECTED_WEB_CLIENT_INJECT,
+})
 
 function normalizePath(path) {
   return resolve(path).replaceAll('\\', '/')
@@ -57,13 +66,17 @@ export function publicJsEntriesFromManifest(manifest) {
   return [...new Set(targets)].sort()
 }
 
-/** Ensure no public package command can bypass the controlled build/prune path. */
-export function assertGuardedPackageScripts(manifest) {
-  assert.equal(manifest.scripts?.build, 'node scripts/build-package.mjs')
+/**
+ * Ensure no public package command can bypass the controlled build/prune path.
+ * @param manifest - the package manifest.
+ * @param options - `scriptsDir`: the repository's `scripts/` directory relative to the package.
+ */
+export function assertGuardedPackageScripts(manifest, { scriptsDir = 'scripts' } = {}) {
+  assert.equal(manifest.scripts?.build, `node ${scriptsDir}/build-package.mjs`)
   assert.equal(manifest.scripts?.bundle, 'pnpm run build')
   assert.equal(
     manifest.scripts?.['package:prepare'],
-    'pnpm run build && pnpm run test:package:purity && node scripts/assert-package-output.mjs',
+    `pnpm run build && pnpm run test:package:purity && node ${scriptsDir}/assert-package-output.mjs`,
   )
   assert.equal(manifest.scripts?.prepack, 'pnpm run package:prepare')
   assert.equal(
@@ -72,14 +85,58 @@ export function assertGuardedPackageScripts(manifest) {
   )
 }
 
+/**
+ * Hold each package to its audited web client roster (see
+ * {@link AUDITED_WEB_CLIENT_INJECT}); a package without one declares none.
+ */
+export function assertAuditedWebClientRoster(manifest) {
+  if (Object.hasOwn(AUDITED_WEB_CLIENT_INJECT, manifest.name)) {
+    assertWebClientInjectRoster(manifest, AUDITED_WEB_CLIENT_INJECT[manifest.name])
+    return
+  }
+  assert.equal(
+    manifest.dsh?.client,
+    undefined,
+    `${manifest.name} declares a dsh.client module roster without an audited web client module roster`,
+  )
+}
+
 /** Keep readiness dependencies limited to concrete web client modules. */
-export function assertWebClientInjectRoster(manifest) {
+export function assertWebClientInjectRoster(manifest, expected = EXPECTED_WEB_CLIENT_INJECT) {
   assert.equal(manifest.dsh?.client?.platform, 'web')
   assert.deepEqual(
     manifest.dsh?.client?.inject,
-    [...EXPECTED_WEB_CLIENT_INJECT],
+    [...expected],
     'dsh.client.inject must exactly match the audited web client module roster',
   )
+}
+
+/** Every module specifier a JS file imports, re-exports, dynamically imports or requires. */
+const MODULE_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+|\brequire\s*\(\s*)["']([^"'\n]+)["']/g
+
+/**
+ * A workspace package a package depends on only at build time is inlined by
+ * its build, so no published runtime file may import it: an installed package
+ * must work whether or not that sibling is installed.
+ * @param root - the published `lib` directory.
+ * @param manifest - the owning package's manifest.
+ * @returns the number of JS files scanned and the specifiers forbidden.
+ */
+export async function assertNoBuildTimeWorkspaceImports(root, manifest) {
+  const forbidden = buildTimeWorkspaceDependencies(manifest)
+  const files = (await publishedFiles(root)).filter(path => extname(path) === '.js')
+  const failures = []
+  for (const path of files) {
+    const contents = await readFile(path, 'utf8')
+    for (const match of contents.matchAll(MODULE_SPECIFIER)) {
+      const specifier = match[1]
+      if (forbidden.some(name => specifier === name || specifier.startsWith(`${name}/`))) {
+        failures.push(`${relative(resolve(root), path).replaceAll('\\', '/')} imports ${specifier}`)
+      }
+    }
+  }
+  assert.deepEqual(failures, [], `published runtime imports a build-time workspace package:\n${failures.join('\n')}`)
+  return { filesScanned: files.length, forbidden }
 }
 
 async function publishedFiles(root) {
@@ -203,17 +260,31 @@ export async function assertPublishedPathPurity(root, options = {}) {
   return { filesScanned: files.length }
 }
 
+/**
+ * Check one package's published `lib`: guarded scripts, its audited client
+ * roster, checkout-path purity (against the whole repository checkout),
+ * chunk reachability, and no runtime import of a build-time workspace package.
+ * @param target - the package's `lib` directory.
+ */
+export async function assertPublishedPackage(target) {
+  const libRoot = resolve(target)
+  const packageRoot = dirname(libRoot)
+  const manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8'))
+  assertGuardedPackageScripts(manifest, {
+    scriptsDir: relative(packageRoot, join(repositoryRoot, 'scripts')).replaceAll('\\', '/'),
+  })
+  assertAuditedWebClientRoster(manifest)
+  const result = await assertPublishedPathPurity(libRoot, { checkoutRoot: repositoryRoot })
+  const reachability = await assertPublishedChunkReachability(libRoot, { manifest })
+  const workspaceImports = await assertNoBuildTimeWorkspaceImports(libRoot, manifest)
+  return { package: manifest.name, pathPurity: 'pass', ...result, reachability, workspaceImports }
+}
+
 const invokedPath = process.argv[1] === undefined ? undefined : pathToFileURL(resolve(process.argv[1])).href
 if (invokedPath === import.meta.url) {
-  const target = process.argv[2]
-  assert.ok(target, 'Usage: node tests/package-purity.mjs <lib-directory>')
-  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-  const manifest = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'))
-  assertGuardedPackageScripts(manifest)
-  assertWebClientInjectRoster(manifest)
-  const result = await assertPublishedPathPurity(target, {
-    checkoutRoot: packageRoot,
-  })
-  const reachability = await assertPublishedChunkReachability(target, { manifest })
-  console.log(JSON.stringify({ pathPurity: 'pass', ...result, reachability }, null, 2))
+  const targets = process.argv.slice(2)
+  assert.ok(targets.length > 0, 'Usage: node tests/package-purity.mjs <lib-directory>...')
+  const results = []
+  for (const target of targets) results.push(await assertPublishedPackage(target))
+  console.log(JSON.stringify(results.length === 1 ? results[0] : results, null, 2))
 }

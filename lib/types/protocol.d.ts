@@ -1,4 +1,13 @@
-/** Versioned, declarative protocol shared by the Host, Agent, and Client. */
+/**
+ * Versioned, declarative protocol shared by the Host, Agent, and Client.
+ *
+ * The visual@4 content model, its validators and the expression language live
+ * in `@dsh-portable/visual/protocol` under neutral names. This module keeps the
+ * Learning protocols (activity V1/V2, visual V3 replay, checkpoint, recall
+ * feedback), the versioned visual@4 envelope, and every historical type name
+ * as an alias of the shared model.
+ */
+import { type CausalLink, type CausalLoop, type CausalLoopContent, type CausalVariable, type CodeTraceContent, type CodeTraceLine, type CodeTraceStackFrame, type CodeTraceStep, type CodeTraceVariable, type ComparisonRelationContent, type DataTableCell, type DataTableChart, type DataTableColumn, type DataTableContent, type DataTableFilter, type DataTableRow, type DataTableSort, type Field2DContent, type FieldAxis, type FormulaStep, type FormulaStepsContent, type MathExpression, type MatrixRelationContent, type NodeGroup, type NodeLinkContent, type NodeLinkEdge, type NodeLinkNode, type ParameterDefinition, type PlotBarSeries, type PlotContent, type PlotCurveSeries, type PlotLineSeries, type PlotMetric, type PlotPoint, type PlotPointSeries, type PlotSeries, type RecallCard, type RecallDeckContent, type RelationAxisItem, type RelationComparisonRow, type RelationContent, type RelationMatrixCell, type RelationSet, type RelationSetItem, type RelationSubject, type ScalarField, type ScalarFieldGrid, type Scene2DContent, type SceneCircle, type SceneElement, type SceneLabel, type ScenePoint, type ScenePolygon, type SceneRect, type SceneSegment, type SequenceBufferContent, type SequenceBufferPointer, type SequenceBufferPointerSnapshot, type SequenceBufferRange, type SequenceBufferRangeSnapshot, type SequenceBufferSlot, type SequenceBufferSlotSnapshot, type SequenceBufferStep, type SequenceDiagramContent, type SequenceMessage, type SequenceParticipant, type SetsRelationContent, type StateTransitionContent, type StateTransitionState, type StateTransitionStep, type StateTransitionTransition, type StudyConcept, type StudyMapContent, type StudySection, type TableValue, type TimelineContent, type TimelineEra, type TimelineEvent, type VectorField, type VectorFieldGrid, type VisualAxis, type VisualContent, type VisualContentKind, type VisualDocument, type VisualFrame, type VisualSequence, type VisualStroke, type VisualTone } from '@dsh-portable/visual/protocol';
 export declare const ACTIVITY_PROTOCOL: "dsh-learning/activity@1";
 export declare const RESPONSE_PROTOCOL: "dsh-learning/response@1";
 export declare const TRANSPORT_PROTOCOL: "dsh-learning/transport@1";
@@ -15,15 +24,11 @@ export declare const CHECKPOINT_RESULT_PROTOCOL: "dsh-learning/checkpoint-result
 export declare const CHECKPOINT_TRANSPORT_PROTOCOL: "dsh-learning/checkpoint-wait@1";
 export declare const LEARNING_CHECKPOINT_KINDS: readonly ["free_text", "single_choice", "numeric", "prediction", "code_slot"];
 export declare const LEARNING_CHECKPOINT_EVIDENCE_KINDS: readonly ["attempt", "prediction", "explanation", "contrast", "transfer"];
-export declare const LEARNING_VISUAL_KINDS_V4: readonly ["plot", "node_link", "scene_2d", "relation", "timeline", "formula_steps", "study_map", "recall_deck", "data_table", "state_transition", "sequence_buffer", "sequence_diagram", "code_trace", "field_2d", "causal_loop"];
+export { VISUAL_CONTENT_KINDS as LEARNING_VISUAL_KINDS_V4 } from '@dsh-portable/visual/protocol';
 export declare const LEARNING_ACTIVITY_KINDS: readonly ["parameter_explorer", "process_stepper", "structure_compare"];
 export declare const MAX_ACTIVITY_BYTES: number;
 export declare const MAX_RESPONSE_BYTES: number;
-export declare const MAX_MATH_DEPTH = 8;
-export declare const MAX_MATH_NODES = 64;
-export declare const MAX_VISUAL_MATH_DEPTH = 4;
-export declare const MATH_BINARY_OPERATORS: readonly ["add", "sub", "mul", "div", "pow", "min", "max"];
-export declare const MATH_UNARY_OPERATORS: readonly ["neg", "abs", "sqrt", "sin", "cos", "tan", "atan", "exp", "log", "sigmoid", "relu", "leaky_relu", "step", "normpdf", "floor", "ceil"];
+export { MAX_MATH_DEPTH, MAX_MATH_NODES, MAX_VISUAL_MATH_DEPTH, MATH_BINARY_OPERATORS, MATH_UNARY_OPERATORS, } from '@dsh-portable/visual/protocol';
 export type LearningActivityKind = typeof LEARNING_ACTIVITY_KINDS[number];
 export type LearningAction = 'submit' | 'skip' | 'cancel';
 export type LearningJson = null | boolean | number | string | LearningJson[] | {
@@ -31,28 +36,8 @@ export type LearningJson = null | boolean | number | string | LearningJson[] | {
 };
 export type LearningCheckpointKindV1 = typeof LEARNING_CHECKPOINT_KINDS[number];
 export type LearningCheckpointEvidenceKindV1 = typeof LEARNING_CHECKPOINT_EVIDENCE_KINDS[number];
-export type MathExpressionV1 = {
-    op: 'constant';
-    value: number;
-} | {
-    op: 'variable';
-    name: string;
-} | {
-    op: typeof MATH_BINARY_OPERATORS[number];
-    left: MathExpressionV1;
-    right: MathExpressionV1;
-} | {
-    op: typeof MATH_UNARY_OPERATORS[number];
-    value: MathExpressionV1;
-};
-export interface ParameterDefinitionV1 {
-    id: string;
-    label: string;
-    min: number;
-    max: number;
-    step: number;
-    initial: number;
-}
+export type MathExpressionV1 = MathExpression;
+export type ParameterDefinitionV1 = ParameterDefinition;
 export interface ParameterCurveV1 {
     id: string;
     label: string;
@@ -323,42 +308,14 @@ export interface LearningCheckpointWaitEnvelopeV1 {
     checkpoint: LearningCheckpointV1;
 }
 export type LearningCheckpointWaitEnvelopeInputV1 = Omit<LearningCheckpointWaitEnvelopeV1, 'transport'>;
-export type LearningVisualToneV3 = 'blue' | 'green' | 'red' | 'orange' | 'purple' | 'gray';
-export type LearningVisualStrokeV3 = 'solid' | 'dashed' | 'dotted';
-export interface LearningVisualAxisV3 {
-    label?: string;
-    min: number;
-    max: number;
-    samples?: number;
-}
-export interface LearningVisualCurveV3 {
-    type: 'curve';
-    id: string;
-    label: string;
-    expression: MathExpressionV1;
-    tone?: LearningVisualToneV3;
-    stroke?: LearningVisualStrokeV3;
-}
-export interface LearningVisualPointV3 {
-    x: number;
-    y: number;
-    label?: string;
-}
-export interface LearningVisualPointSeriesV3 {
-    type: 'points';
-    id: string;
-    label: string;
-    points: LearningVisualPointV3[];
-    tone?: LearningVisualToneV3;
-}
+export type LearningVisualToneV3 = VisualTone;
+export type LearningVisualStrokeV3 = VisualStroke;
+export type LearningVisualAxisV3 = VisualAxis;
+export type LearningVisualCurveV3 = PlotCurveSeries;
+export type LearningVisualPointV3 = PlotPoint;
+export type LearningVisualPointSeriesV3 = PlotPointSeries;
 export type LearningVisualSeriesV3 = LearningVisualCurveV3 | LearningVisualPointSeriesV3;
-export interface LearningVisualMetricV3 {
-    id: string;
-    label: string;
-    expression: MathExpressionV1;
-    digits?: number;
-    suffix?: string;
-}
+export type LearningVisualMetricV3 = PlotMetric;
 /**
  * A non-blocking, replayable visual embedded in the assistant's normal turn.
  * It never owns learner input: the ordinary conversation composer remains live.
@@ -378,507 +335,93 @@ export interface LearningVisualResultV3 {
     protocol: typeof VISUAL_RESULT_PROTOCOL_V3;
     status: 'ready';
 }
-export type LearningVisualKindV4 = typeof LEARNING_VISUAL_KINDS_V4[number];
+export type LearningVisualKindV4 = VisualContentKind;
 export type LearningVisualToneV4 = LearningVisualToneV3;
 export type LearningVisualStrokeV4 = LearningVisualStrokeV3;
-export interface LearningVisualLineSeriesV4 {
-    type: 'line';
-    id: string;
-    label: string;
-    points: LearningVisualPointV3[];
-    tone?: LearningVisualToneV4;
-    stroke?: LearningVisualStrokeV4;
-}
-export interface LearningVisualBarSeriesV4 {
-    type: 'bars';
-    id: string;
-    label: string;
-    points: LearningVisualPointV3[];
-    tone?: LearningVisualToneV4;
-}
-export type LearningPlotSeriesV4 = LearningVisualCurveV3 | LearningVisualPointSeriesV3 | LearningVisualLineSeriesV4 | LearningVisualBarSeriesV4;
-export interface LearningPlotV4 {
-    kind: 'plot';
-    parameters?: ParameterDefinitionV1[];
-    xAxis: LearningVisualAxisV3;
-    yAxis: LearningVisualAxisV3;
-    series: LearningPlotSeriesV4[];
-    metrics?: LearningVisualMetricV3[];
-}
-export interface LearningNodeGroupV4 {
-    id: string;
-    label: string;
-}
-export interface LearningNodeV4 {
-    id: string;
-    label: string;
-    detail?: string;
-    group?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningEdgeV4 {
-    id: string;
-    from: string;
-    to: string;
-    label?: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-    stroke?: LearningVisualStrokeV4;
-    directed?: boolean;
-}
-export interface LearningNodeLinkV4 {
-    kind: 'node_link';
-    layout: 'layered' | 'hierarchy' | 'radial';
-    groups?: LearningNodeGroupV4[];
-    nodes: LearningNodeV4[];
-    edges: LearningEdgeV4[];
-}
-interface LearningSceneElementBaseV4 {
-    id: string;
-    label?: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningScenePointV4 extends LearningSceneElementBaseV4 {
-    type: 'point';
-    x: number;
-    y: number;
-    size?: number;
-}
-export interface LearningSceneSegmentV4 extends LearningSceneElementBaseV4 {
-    type: 'segment' | 'arrow';
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-    stroke?: LearningVisualStrokeV4;
-}
-export interface LearningSceneCircleV4 extends LearningSceneElementBaseV4 {
-    type: 'circle';
-    cx: number;
-    cy: number;
-    r: number;
-}
-export interface LearningSceneRectV4 extends LearningSceneElementBaseV4 {
-    type: 'rect';
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-}
-export interface LearningScenePolygonV4 extends LearningSceneElementBaseV4 {
-    type: 'polygon';
-    points: Array<{
-        x: number;
-        y: number;
-    }>;
-}
-export interface LearningSceneLabelV4 extends LearningSceneElementBaseV4 {
-    type: 'label';
-    x: number;
-    y: number;
-    text: string;
-}
-export type LearningSceneElementV4 = LearningScenePointV4 | LearningSceneSegmentV4 | LearningSceneCircleV4 | LearningSceneRectV4 | LearningScenePolygonV4 | LearningSceneLabelV4;
-export interface LearningScene2DV4 {
-    kind: 'scene_2d';
-    xAxis: LearningVisualAxisV3;
-    yAxis: LearningVisualAxisV3;
-    grid?: boolean;
-    elements: LearningSceneElementV4[];
-}
-export interface LearningRelationSubjectV4 {
-    id: string;
-    label: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningRelationComparisonRowV4 {
-    id: string;
-    label: string;
-    cells: Array<{
-        subjectId: string;
-        value: string;
-        tone?: LearningVisualToneV4;
-    }>;
-    detail?: string;
-}
-export interface LearningComparisonRelationV4 {
-    kind: 'relation';
-    variant: 'comparison';
-    subjects: LearningRelationSubjectV4[];
-    rows: LearningRelationComparisonRowV4[];
-}
-export interface LearningRelationAxisItemV4 {
-    id: string;
-    label: string;
-}
-export interface LearningRelationMatrixCellV4 {
-    id: string;
-    rowId: string;
-    columnId: string;
-    label: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningMatrixRelationV4 {
-    kind: 'relation';
-    variant: 'matrix';
-    rows: LearningRelationAxisItemV4[];
-    columns: LearningRelationAxisItemV4[];
-    cells: LearningRelationMatrixCellV4[];
-}
-export interface LearningRelationSetV4 {
-    id: string;
-    label: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningRelationSetItemV4 {
-    id: string;
-    label: string;
-    setIds: string[];
-    detail?: string;
-}
-export interface LearningSetsRelationV4 {
-    kind: 'relation';
-    variant: 'sets';
-    sets: LearningRelationSetV4[];
-    items: LearningRelationSetItemV4[];
-}
-export type LearningRelationV4 = LearningComparisonRelationV4 | LearningMatrixRelationV4 | LearningSetsRelationV4;
-export interface LearningTimelineEventV4 {
-    id: string;
-    time: string;
-    label: string;
-    detail?: string;
-    /** Optional normalized position from 0 to 1; omit for equal spacing. */
-    position?: number;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningTimelineEraV4 {
-    id: string;
-    label: string;
-    startEventId: string;
-    endEventId: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningTimelineV4 {
-    kind: 'timeline';
-    orientation?: 'horizontal' | 'vertical';
-    events: LearningTimelineEventV4[];
-    eras?: LearningTimelineEraV4[];
-}
-export interface LearningFormulaStepV4 {
-    id: string;
-    /** A single trusted Markdown-math expression, preferably LaTeX without delimiters. */
-    expression: string;
-    label?: string;
-    /** The named rule that transforms the preceding expression into this one. */
-    rule?: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningFormulaStepsV4 {
-    kind: 'formula_steps';
-    notation?: string;
-    steps: LearningFormulaStepV4[];
-    conclusion?: string;
-}
-export interface LearningStudySectionV4 {
-    id: string;
-    label: string;
-    /** Human-readable source location such as “Chapter 2” or “pp. 18–23”. */
-    anchor?: string;
-    summary?: string;
-}
-export interface LearningStudyConceptV4 {
-    id: string;
-    label: string;
-    sectionId: string;
-    detail?: string;
-    prerequisiteIds?: string[];
-    role?: 'foundation' | 'core' | 'extension' | 'practice';
-    tone?: LearningVisualToneV4;
-}
-export interface LearningStudyMapV4 {
-    kind: 'study_map';
-    sourceLabel: string;
-    goal?: string;
-    sections: LearningStudySectionV4[];
-    concepts: LearningStudyConceptV4[];
-}
-export interface LearningRecallCardV4 {
-    id: string;
-    prompt: string;
-    answer: string;
-    hint?: string;
-    tags?: string[];
-}
-export interface LearningRecallDeckV4 {
-    kind: 'recall_deck';
-    instructions?: string;
-    cards: LearningRecallCardV4[];
-}
-export type LearningTableValueV4 = string | number | boolean | null;
-export interface LearningDataTableColumnV4 {
-    id: string;
-    label: string;
-    type: 'string' | 'number' | 'boolean' | 'date';
-    unit?: string;
-}
-export interface LearningDataTableCellV4 {
-    columnId: string;
-    value: LearningTableValueV4;
-}
-export interface LearningDataTableRowV4 {
-    id: string;
-    cells: LearningDataTableCellV4[];
-    detail?: string;
-}
-export interface LearningDataTableSortV4 {
-    columnId: string;
-    direction: 'asc' | 'desc';
-}
-export interface LearningDataTableFilterV4 {
-    columnId: string;
-    operator: 'equals' | 'not_equals' | 'contains' | 'gt' | 'gte' | 'lt' | 'lte';
-    value: LearningTableValueV4;
-}
-export interface LearningDataTableChartV4 {
-    type: 'line' | 'bar' | 'scatter';
-    xColumnId: string;
-    yColumnId: string;
-    seriesColumnId?: string;
-}
-export interface LearningDataTableV4 {
-    kind: 'data_table';
-    columns: LearningDataTableColumnV4[];
-    rows: LearningDataTableRowV4[];
-    outlierIds?: string[];
-    initialSort?: LearningDataTableSortV4;
-    initialFilter?: LearningDataTableFilterV4;
-    chart?: LearningDataTableChartV4;
-}
-export interface LearningStateTransitionStateV4 {
-    id: string;
-    label: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-    initial?: boolean;
-    final?: boolean;
-}
-export interface LearningStateTransitionTransitionV4 {
-    id: string;
-    from: string;
-    to: string;
-    trigger: string;
-    guard?: string;
-    action?: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningStateTransitionStepV4 {
-    id: string;
-    label: string;
-    currentStateId: string;
-    transitionId?: string;
-    description?: string;
-}
-export interface LearningStateTransitionV4 {
-    kind: 'state_transition';
-    states: LearningStateTransitionStateV4[];
-    transitions: LearningStateTransitionTransitionV4[];
-    steps?: LearningStateTransitionStepV4[];
-}
-export interface LearningSequenceBufferSlotV4 {
-    id: string;
-    index: number;
-    value: LearningTableValueV4;
-    label?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningSequenceBufferPointerV4 {
-    id: string;
-    label: string;
-    index: number;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningSequenceBufferRangeV4 {
-    id: string;
-    label: string;
-    start: number;
-    end: number;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningSequenceBufferSlotSnapshotV4 {
-    slotId: string;
-    value?: LearningTableValueV4;
-}
-export interface LearningSequenceBufferPointerSnapshotV4 {
-    pointerId: string;
-    index: number;
-}
-export interface LearningSequenceBufferRangeSnapshotV4 {
-    rangeId: string;
-    start: number;
-    end: number;
-}
-export interface LearningSequenceBufferStepV4 {
-    id: string;
-    label: string;
-    description?: string;
-    slots?: LearningSequenceBufferSlotSnapshotV4[];
-    pointers?: LearningSequenceBufferPointerSnapshotV4[];
-    ranges?: LearningSequenceBufferRangeSnapshotV4[];
-}
-export interface LearningSequenceBufferV4 {
-    kind: 'sequence_buffer';
-    slots: LearningSequenceBufferSlotV4[];
-    pointers?: LearningSequenceBufferPointerV4[];
-    ranges?: LearningSequenceBufferRangeV4[];
-    steps?: LearningSequenceBufferStepV4[];
-}
-export interface LearningSequenceParticipantV4 {
-    id: string;
-    label: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningSequenceMessageV4 {
-    id: string;
-    from: string;
-    to: string;
-    label: string;
-    type: 'sync' | 'async' | 'return' | 'self';
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningSequenceDiagramV4 {
-    kind: 'sequence_diagram';
-    participants: LearningSequenceParticipantV4[];
-    messages: LearningSequenceMessageV4[];
-}
-export interface LearningCodeTraceLineV4 {
-    number: number;
-    text: string;
-}
-export interface LearningCodeTraceVariableV4 {
-    name: string;
-    value: LearningTableValueV4;
-    type?: string;
-}
-export interface LearningCodeTraceStackFrameV4 {
-    id: string;
-    function: string;
-    line?: number;
-}
-export interface LearningCodeTraceStepV4 {
-    id: string;
-    label: string;
-    currentLine: number;
-    variables: LearningCodeTraceVariableV4[];
-    stack: LearningCodeTraceStackFrameV4[];
-    output?: string;
-    description?: string;
-}
-export interface LearningCodeTraceV4 {
-    kind: 'code_trace';
-    language: string;
-    code: string;
-    lines: LearningCodeTraceLineV4[];
-    steps: LearningCodeTraceStepV4[];
-}
-export interface LearningFieldAxisV4 {
-    label?: string;
-    min: number;
-    max: number;
-    samples?: number;
-}
-export interface LearningScalarFieldGridV4 {
-    columns: number;
-    rows: number;
-    values: number[];
-}
-export interface LearningVectorFieldGridV4 {
-    columns: number;
-    rows: number;
-    u: number[];
-    v: number[];
-}
-export interface LearningScalarFieldV4 {
-    samples?: LearningScalarFieldGridV4;
-    expression?: MathExpressionV1;
-    min?: number;
-    max?: number;
-}
-export interface LearningVectorFieldV4 {
-    samples?: LearningVectorFieldGridV4;
-    expression?: {
-        u: MathExpressionV1;
-        v: MathExpressionV1;
-    };
-}
-export interface LearningField2DV4 {
-    kind: 'field_2d';
-    xAxis: LearningFieldAxisV4;
-    yAxis: LearningFieldAxisV4;
-    scalar?: LearningScalarFieldV4;
-    vector?: LearningVectorFieldV4;
-}
-export interface LearningCausalVariableV4 {
-    id: string;
-    label: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningCausalLinkV4 {
-    id: string;
-    from: string;
-    to: string;
-    polarity: 'positive' | 'negative';
-    delay?: number;
-    label?: string;
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningCausalLoopV4 {
-    id: string;
-    label: string;
-    type: 'reinforcing' | 'balancing';
-    linkIds: string[];
-    detail?: string;
-    tone?: LearningVisualToneV4;
-}
-export interface LearningCausalLoopDiagramV4 {
-    kind: 'causal_loop';
-    variables: LearningCausalVariableV4[];
-    links: LearningCausalLinkV4[];
-    loops?: LearningCausalLoopV4[];
-}
-export type LearningVisualContentV4 = LearningPlotV4 | LearningNodeLinkV4 | LearningScene2DV4 | LearningRelationV4 | LearningTimelineV4 | LearningFormulaStepsV4 | LearningStudyMapV4 | LearningRecallDeckV4 | LearningDataTableV4 | LearningStateTransitionV4 | LearningSequenceBufferV4 | LearningSequenceDiagramV4 | LearningCodeTraceV4 | LearningField2DV4 | LearningCausalLoopDiagramV4;
-export interface LearningVisualFrameV4 {
-    id: string;
-    label: string;
-    description?: string;
-    focusIds: string[];
-}
-export interface LearningVisualSequenceV4 {
-    initialFrameId?: string;
-    frames: LearningVisualFrameV4[];
-}
+export type LearningVisualLineSeriesV4 = PlotLineSeries;
+export type LearningVisualBarSeriesV4 = PlotBarSeries;
+export type LearningPlotSeriesV4 = PlotSeries;
+export type LearningPlotV4 = PlotContent;
+export type LearningNodeGroupV4 = NodeGroup;
+export type LearningNodeV4 = NodeLinkNode;
+export type LearningEdgeV4 = NodeLinkEdge;
+export type LearningNodeLinkV4 = NodeLinkContent;
+export type LearningScenePointV4 = ScenePoint;
+export type LearningSceneSegmentV4 = SceneSegment;
+export type LearningSceneCircleV4 = SceneCircle;
+export type LearningSceneRectV4 = SceneRect;
+export type LearningScenePolygonV4 = ScenePolygon;
+export type LearningSceneLabelV4 = SceneLabel;
+export type LearningSceneElementV4 = SceneElement;
+export type LearningScene2DV4 = Scene2DContent;
+export type LearningRelationSubjectV4 = RelationSubject;
+export type LearningRelationComparisonRowV4 = RelationComparisonRow;
+export type LearningComparisonRelationV4 = ComparisonRelationContent;
+export type LearningRelationAxisItemV4 = RelationAxisItem;
+export type LearningRelationMatrixCellV4 = RelationMatrixCell;
+export type LearningMatrixRelationV4 = MatrixRelationContent;
+export type LearningRelationSetV4 = RelationSet;
+export type LearningRelationSetItemV4 = RelationSetItem;
+export type LearningSetsRelationV4 = SetsRelationContent;
+export type LearningRelationV4 = RelationContent;
+export type LearningTimelineEventV4 = TimelineEvent;
+export type LearningTimelineEraV4 = TimelineEra;
+export type LearningTimelineV4 = TimelineContent;
+export type LearningFormulaStepV4 = FormulaStep;
+export type LearningFormulaStepsV4 = FormulaStepsContent;
+export type LearningStudySectionV4 = StudySection;
+export type LearningStudyConceptV4 = StudyConcept;
+export type LearningStudyMapV4 = StudyMapContent;
+export type LearningRecallCardV4 = RecallCard;
+export type LearningRecallDeckV4 = RecallDeckContent;
+export type LearningTableValueV4 = TableValue;
+export type LearningDataTableColumnV4 = DataTableColumn;
+export type LearningDataTableCellV4 = DataTableCell;
+export type LearningDataTableRowV4 = DataTableRow;
+export type LearningDataTableSortV4 = DataTableSort;
+export type LearningDataTableFilterV4 = DataTableFilter;
+export type LearningDataTableChartV4 = DataTableChart;
+export type LearningDataTableV4 = DataTableContent;
+export type LearningStateTransitionStateV4 = StateTransitionState;
+export type LearningStateTransitionTransitionV4 = StateTransitionTransition;
+export type LearningStateTransitionStepV4 = StateTransitionStep;
+export type LearningStateTransitionV4 = StateTransitionContent;
+export type LearningSequenceBufferSlotV4 = SequenceBufferSlot;
+export type LearningSequenceBufferPointerV4 = SequenceBufferPointer;
+export type LearningSequenceBufferRangeV4 = SequenceBufferRange;
+export type LearningSequenceBufferSlotSnapshotV4 = SequenceBufferSlotSnapshot;
+export type LearningSequenceBufferPointerSnapshotV4 = SequenceBufferPointerSnapshot;
+export type LearningSequenceBufferRangeSnapshotV4 = SequenceBufferRangeSnapshot;
+export type LearningSequenceBufferStepV4 = SequenceBufferStep;
+export type LearningSequenceBufferV4 = SequenceBufferContent;
+export type LearningSequenceParticipantV4 = SequenceParticipant;
+export type LearningSequenceMessageV4 = SequenceMessage;
+export type LearningSequenceDiagramV4 = SequenceDiagramContent;
+export type LearningCodeTraceLineV4 = CodeTraceLine;
+export type LearningCodeTraceVariableV4 = CodeTraceVariable;
+export type LearningCodeTraceStackFrameV4 = CodeTraceStackFrame;
+export type LearningCodeTraceStepV4 = CodeTraceStep;
+export type LearningCodeTraceV4 = CodeTraceContent;
+export type LearningFieldAxisV4 = FieldAxis;
+export type LearningScalarFieldGridV4 = ScalarFieldGrid;
+export type LearningVectorFieldGridV4 = VectorFieldGrid;
+export type LearningScalarFieldV4 = ScalarField;
+export type LearningVectorFieldV4 = VectorField;
+export type LearningField2DV4 = Field2DContent;
+export type LearningCausalVariableV4 = CausalVariable;
+export type LearningCausalLinkV4 = CausalLink;
+export type LearningCausalLoopV4 = CausalLoop;
+export type LearningCausalLoopDiagramV4 = CausalLoopContent;
+export type LearningVisualContentV4 = VisualContent;
+export type LearningVisualFrameV4 = VisualFrame;
+export type LearningVisualSequenceV4 = VisualSequence;
 /**
- * A semantic, non-blocking visual. The content discriminator selects a trusted
- * native renderer; arbitrary markup and executable payloads are never accepted.
+ * A semantic, non-blocking visual in Learning's versioned envelope: the shared
+ * `VisualDocument` plus the `dsh-learning/visual@4` literal that Learning's
+ * tool calls and their replay are keyed on.
  */
-export interface LearningVisualV4 {
+export interface LearningVisualV4 extends VisualDocument {
     protocol: typeof VISUAL_PROTOCOL_V4;
-    title: string;
-    description?: string;
-    content: LearningVisualContentV4;
-    sequence?: LearningVisualSequenceV4;
-    fallbackMarkdown?: string;
 }
 /**
  * Terminal outcome of one `learning_visual` call.
@@ -932,11 +475,13 @@ export interface ExpectedLearningCheckpointResultV1 {
 export declare function parseLearningCheckpointResultV1(value: unknown, expected?: ExpectedLearningCheckpointResultV1): LearningCheckpointResultV1;
 /** Validate the preferred, non-blocking visual protocol. */
 export declare function parseLearningVisualV3(value: unknown): LearningVisualV3;
-/** Validate the semantic, model-facing visual protocol while retaining V3 replay separately. */
+/**
+ * Validate Learning's visual@4 envelope (its protocol literal); the document
+ * fields and content are validated by `@dsh-portable/visual`.
+ */
 export declare function parseLearningVisualV4(value: unknown): LearningVisualV4;
 export declare function parseLearningVisualResultV4(value: unknown): LearningVisualResultV4;
 /** Parse the small Client → Host recall bridge payload. */
 export declare function parseLearningRecallFeedbackV1(value: unknown): LearningRecallFeedbackV1;
 export declare function parseLearningVisualResultV3(value: unknown): LearningVisualResultV3;
-export {};
 //# sourceMappingURL=protocol.d.ts.map
