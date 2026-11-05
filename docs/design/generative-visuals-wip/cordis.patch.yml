@@ -1,0 +1,16 @@
+# Bundle patch for `@dsh-portable/visual` (package.json `dsh.bundle.patch`).
+# Installing the package as a profile bundle with the plugin manager
+# (`dsh plugin add` / `plugin_manager install_bundle`) layers these rows into
+# the profile; nothing has to be copied into `$DSH_HOME`.
+
+# Mount the visual host plugin at the profile root. It registers nothing
+# globally: it attaches the `visualize` selector to each eligible agent as the
+# agent is created, and only while the web composition includes this
+# package's Client. Options (all optional):
+#   kinds:          visual kinds the selector offers (default: every general kind)
+#   presets:        preset ids to attach to (default: every preset)
+#   excludePresets: preset ids never attached to, e.g. [ptc] for code mode
+#   subagents:      also attach to subagent sessions (default: false)
+- insert:
+    - id: visual
+      name: '@dsh-portable/visual'
